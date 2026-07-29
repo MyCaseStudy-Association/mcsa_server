@@ -1,0 +1,13 @@
+# Isolated de-identification detector (OD-02/OD-03): self-hosted Presidio.
+# Data never leaves our zone — no cloud DLP.
+#
+#   docker compose -f docker-compose.presidio.yml up -d
+#   DETECTOR=presidio PRESIDIO_URL=http://localhost:5002 npm run start:dev
+services:
+  presidio-analyzer:
+    image: mcr.microsoft.com/presidio-analyzer:latest
+    ports:
+      - "5002:3000"
+    environment:
+      - PORT=3000
+    restart: unless-stopped

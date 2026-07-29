@@ -18,6 +18,36 @@ model User {
   @@map("users")
 }
 
+// ---------------------------------------------------------------------------
+// Proof store (spec §5, INV-9). Persists ONLY fingerprints and attestation
+// metadata — never prompt content, never matched entity text.
+// ---------------------------------------------------------------------------
+
+model RecordFingerprint {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  exactHash      String   @map("exact_hash") @db.VarChar(64)
+  simHash        String   @map("sim_hash") @db.VarChar(16)
+  rulesetVersion String   @map("ruleset_version") @db.VarChar(40)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([userId, exactHash])
+  @@index([exactHash])
+  @@map("record_fingerprints")
+}
+
+model DeidAttestation {
+  id                String   @id @default(uuid()) @db.Uuid
+  recordFingerprint String   @map("record_fingerprint") @db.VarChar(64)
+  payload           Json
+  prevHash          String?  @map("prev_hash") @db.VarChar(64)
+  chainHash         String   @map("chain_hash") @db.VarChar(64)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([recordFingerprint])
+  @@map("deid_attestations")
+}
+
 model RefreshToken {
   id        String    @id @default(uuid()) @db.Uuid
   userId    String    @map("user_id") @db.Uuid
