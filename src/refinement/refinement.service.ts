@@ -4,24 +4,28 @@
  * Stateless between requests. All content lives in local variables and is
  * garbage-collected after the response — nothing raw or intermediate is
  * written to disk, and log lines carry metadata only (counts, types, reason
- * codes; never text). Persisted artefacts are limited to fingerprints and
- * attestation metadata (INV-1 / INV-9).
+ * codes; never text). Persisted artefacts are limited to fingerprints,
+ * attestation metadata, the signed consent receipt, and the de-identified
+ * packaged bundle (INV-1 / INV-9, Crossing (2)).
  *
- * Fail closed: if the detector is unavailable or errors, every record in
- * the batch is EXCLUDED (Appendix D §D.3 — flagging defers a decision, it
- * never waives it).
+ * Build #1: the unit of work is the CONVERSATION (APP-D-08) — records are
+ * grouped by conversationId and processed with one ephemeral pseudonym map
+ * per conversation. Fail closed: if the detector is unavailable or errors,
+ * the affected records are EXCLUDED (Appendix D §D.3).
  */
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { chainHash } from './attestation/hash-chain';
-import { processRecord } from './policy/pipeline';
+import { processConversation } from './policy/conversation';
 import { STAGE6_POLICY_VERSION } from './policy/thresholds';
+import { PackagingService } from './packaging/packaging.service';
 import { ProcessRecordsDto } from './dto/process-records.dto';
 import { DETECTOR } from './refinement.types';
 import type {
-  AttestationPayload,
+  ConversationOutcome,
   Detector,
   PipelineOutcome,
+  RecordInput,
 } from './refinement.types';
 
 export type ProcessResponse = {
@@ -30,6 +34,12 @@ export type ProcessResponse = {
     outcome: string;
     reasonCodes: string[];
     attestationId: string | null;
+  }[];
+  conversations: {
+    conversationId: string;
+    keptCount: number;
+    consentReceiptRef: string | null;
+    packagedRecordRef: string | null;
   }[];
   policyVersion: string;
   keptCount: number;
@@ -44,6 +54,7 @@ export class RefinementService {
   constructor(
     @Inject(DETECTOR) private readonly detector: Detector,
     private readonly prisma: PrismaService,
+    private readonly packaging: PackagingService,
   ) {}
 
   async process(
@@ -56,38 +67,100 @@ export class RefinementService {
       modelVersion: this.detector.version,
     };
 
-    const outcomes: PipelineOutcome[] = [];
-
+    // --- Build #1: group by conversation, first-seen order ---------------
+    const groups = new Map<string, RecordInput[]>();
     for (const record of dto.records) {
-      let outcome: PipelineOutcome;
-      try {
-        const spans = await this.detector.analyze(record.refinedText);
-        outcome = processRecord(
-          {
-            clientRecordId: record.clientRecordId,
-            refinedText: record.refinedText,
-            flaggedCategoryIds: record.flaggedCategoryIds,
-            exactHash: record.exactHash,
-            simHash: record.simHash,
-          },
-          spans,
-          versions,
-        );
-      } catch {
-        // Detector down → fail closed (never fail open).
-        outcome = this.failClosedOutcome(
-          record.clientRecordId,
-          record.exactHash,
-          dto,
-        );
-      }
-      outcomes.push(outcome);
+      const input: RecordInput = {
+        clientRecordId: record.clientRecordId,
+        conversationId: record.conversationId,
+        turnIndex: record.turnIndex,
+        refinedText: record.refinedText,
+        flaggedCategoryIds: record.flaggedCategoryIds,
+        exactHash: record.exactHash,
+        simHash: record.simHash,
+        capturedAt: record.capturedAt,
+      };
+      const group = groups.get(record.conversationId);
+      if (group) group.push(input);
+      else groups.set(record.conversationId, [input]);
     }
 
-    const attestationIds = await this.persistProofs(userId, dto, outcomes);
+    const conversations: ConversationOutcome[] = [];
+    for (const records of groups.values()) {
+      conversations.push(
+        await processConversation(
+          records,
+          (text) => this.detector.analyze(text),
+          versions,
+        ),
+      );
+    }
+
+    // --- Builds #4 + #2: receipt → proofs → packaged bundle --------------
+    const conversationSummaries: ProcessResponse['conversations'] = [];
+    const attestationIdByRecord = new Map<string, string | null>();
+
+    for (const conversation of conversations) {
+      const kept = conversation.outcomes.filter(
+        (outcome) => outcome.outcome === 'kept',
+      );
+      let receiptRef: string | null = null;
+      let recordRef: string | null = null;
+
+      try {
+        // Receipt FIRST, so attestations persist with the ref (not null).
+        receiptRef = await this.packaging.createReceipt(
+          userId,
+          conversation,
+          dto.sourceProvider,
+          dto.consent,
+        );
+
+        const chainTail = await this.persistProofs(
+          userId,
+          dto.rulesetVersion,
+          groups.get(conversation.conversationId) ?? [],
+          conversation.outcomes,
+          attestationIdByRecord,
+        );
+
+        if (receiptRef) {
+          recordRef = await this.packaging.createPackagedRecord(
+            userId,
+            conversation,
+            receiptRef,
+            chainTail,
+            groups.get(conversation.conversationId)?.[0]?.capturedAt,
+          );
+        }
+      } catch (error) {
+        // Proof store unavailable (e.g. local dev without Postgres). The
+        // pipeline result is still returned; nothing content-bearing at
+        // stake beyond the unsellable bundle. Metadata-only log.
+        this.logger.warn(
+          `proof store unavailable — proofs/receipt/bundle not persisted (${(error as Error).name})`,
+        );
+      }
+
+      conversationSummaries.push({
+        conversationId: conversation.conversationId,
+        keptCount: kept.length,
+        consentReceiptRef: receiptRef,
+        packagedRecordRef: recordRef,
+      });
+    }
+
+    // --- Response in original request order ------------------------------
+    const outcomeByRecord = new Map<string, PipelineOutcome>();
+    conversations.forEach((conversation) =>
+      conversation.outcomes.forEach((outcome) =>
+        outcomeByRecord.set(outcome.clientRecordId, outcome),
+      ),
+    );
 
     const counts = { kept: 0, excluded: 0, dropped: 0 };
-    outcomes.forEach((outcome) => {
+    const allOutcomes = [...outcomeByRecord.values()];
+    allOutcomes.forEach((outcome) => {
       if (outcome.outcome === 'kept') counts.kept += 1;
       else if (outcome.outcome === 'excluded') counts.excluded += 1;
       else counts.dropped += 1;
@@ -95,16 +168,21 @@ export class RefinementService {
 
     // Metadata-only operator telemetry (E.1.8 / NFR-7).
     this.logger.log(
-      `processed batch user=${userId} records=${outcomes.length} kept=${counts.kept} excluded=${counts.excluded} dropped=${counts.dropped}`,
+      `processed batch user=${userId} conversations=${conversations.length} records=${allOutcomes.length} kept=${counts.kept} excluded=${counts.excluded} dropped=${counts.dropped}`,
     );
 
     return {
-      results: outcomes.map((outcome, index) => ({
-        clientRecordId: outcome.clientRecordId,
-        outcome: outcome.outcome,
-        reasonCodes: outcome.reasonCodes,
-        attestationId: attestationIds[index],
-      })),
+      results: dto.records.map((record) => {
+        const outcome = outcomeByRecord.get(record.clientRecordId);
+        return {
+          clientRecordId: record.clientRecordId,
+          outcome: outcome?.outcome ?? 'excluded',
+          reasonCodes: outcome?.reasonCodes ?? ['EXC_STAGE6_UNAVAILABLE'],
+          attestationId:
+            attestationIdByRecord.get(record.clientRecordId) ?? null,
+        };
+      }),
+      conversations: conversationSummaries,
       policyVersion: STAGE6_POLICY_VERSION,
       keptCount: counts.kept,
       excludedCount: counts.excluded,
@@ -112,101 +190,48 @@ export class RefinementService {
     };
   }
 
-  private failClosedOutcome(
-    clientRecordId: string,
-    exactHash: string,
-    dto: ProcessRecordsDto,
-  ): PipelineOutcome {
-    const attestation: AttestationPayload = {
-      record_fingerprint: exactHash,
-      consent_receipt_ref: null,
-      stage4_ruleset_version: dto.rulesetVersion,
-      stage6_policy_version: STAGE6_POLICY_VERSION,
-      thresholds_version: 'n/a',
-      model_id: this.detector.id,
-      model_version: this.detector.version,
-      gazetteer_version: 'n/a',
-      identifiers_redacted: [],
-      generalisations_applied: [],
-      qi_count_before: 0,
-      qi_count_after: 0,
-      singling_out_suppression: { fired: false, qi_types_suppressed: [] },
-      attribution_buckets_fired: [],
-      third_party_data_present: false,
-      fiction_recovery_applied: false,
-      gazetteer_allows: [],
-      categories_flagged_stage4:
-        dto.records.find((record) => record.clientRecordId === clientRecordId)
-          ?.flaggedCategoryIds ?? [],
-      categories_screened_stage6: [],
-      category_outcome: 'excluded',
-      actions_taken: ['EXCLUDE'],
-      reason_codes: ['EXC_STAGE6_UNAVAILABLE'],
-      standard: 'de-identified for the buyer; pseudonymised internally',
-    };
-    return {
-      clientRecordId,
-      outcome: 'excluded',
-      reasonCodes: ['EXC_STAGE6_UNAVAILABLE'],
-      finalText: null,
-      attestation,
-      operatorLog: [],
-    };
-  }
-
   /**
    * Crossing (2): only fingerprints + attestation metadata persist.
-   * Attestations are hash-chained in insertion order (R-06).
+   * Attestations are hash-chained in insertion order (R-06). Returns the
+   * chain tail so the packaged record can extend it (FR-5.3).
    */
   private async persistProofs(
     userId: string,
-    dto: ProcessRecordsDto,
+    rulesetVersion: string,
+    records: RecordInput[],
     outcomes: PipelineOutcome[],
-  ): Promise<(string | null)[]> {
-    const ids: (string | null)[] = [];
+    attestationIdByRecord: Map<string, string | null>,
+  ): Promise<string | null> {
+    await this.prisma.recordFingerprint.createMany({
+      data: records.map((record) => ({
+        userId,
+        exactHash: record.exactHash,
+        simHash: record.simHash,
+        rulesetVersion,
+      })),
+      skipDuplicates: true,
+    });
 
-    try {
-      await this.prisma.recordFingerprint.createMany({
-        data: dto.records.map((record) => ({
-          userId,
-          exactHash: record.exactHash,
-          simHash: record.simHash,
-          rulesetVersion: dto.rulesetVersion,
-        })),
-        skipDuplicates: true,
+    const last = await this.prisma.deidAttestation.findFirst({
+      orderBy: { createdAt: 'desc' },
+      select: { chainHash: true },
+    });
+    let prevHash: string | null = last?.chainHash ?? null;
+
+    for (const outcome of outcomes) {
+      const hash = chainHash(prevHash, outcome.attestation);
+      const row = await this.prisma.deidAttestation.create({
+        data: {
+          recordFingerprint: outcome.attestation.record_fingerprint,
+          payload: outcome.attestation,
+          prevHash,
+          chainHash: hash,
+        },
+        select: { id: true },
       });
-
-      const last = await this.prisma.deidAttestation.findFirst({
-        orderBy: { createdAt: 'desc' },
-        select: { chainHash: true },
-      });
-      let prevHash: string | null = last?.chainHash ?? null;
-
-      for (const outcome of outcomes) {
-        const hash = chainHash(prevHash, outcome.attestation);
-        const row = await this.prisma.deidAttestation.create({
-          data: {
-            recordFingerprint: outcome.attestation.record_fingerprint,
-            payload: outcome.attestation,
-            prevHash,
-            chainHash: hash,
-          },
-          select: { id: true },
-        });
-        ids.push(row.id);
-        prevHash = hash;
-      }
-    } catch (error) {
-      // Proof store unavailable (e.g. local dev without Postgres). The
-      // pipeline result is still returned; nothing content-bearing was at
-      // stake. Metadata-only log.
-      this.logger.warn(
-        `proof store unavailable — attestations not persisted (${(error as Error).name})`,
-      );
-      while (ids.length < outcomes.length) ids.push(null);
+      attestationIdByRecord.set(outcome.clientRecordId, row.id);
+      prevHash = hash;
     }
-
-    while (ids.length < outcomes.length) ids.push(null);
-    return ids;
+    return prevHash;
   }
 }

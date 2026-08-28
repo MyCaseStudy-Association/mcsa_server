@@ -32,6 +32,8 @@ import {
   DetectedSpan,
   OperatorLogEntry,
   PipelineOutcome,
+  PseudonymMap,
+  QiHit,
   RecordInput,
   SentenceAttribution,
 } from '../refinement.types';
@@ -113,26 +115,14 @@ const AGE_ADJECTIVE = /\b(\d{1,2})[- ]year[- ]old\b/i;
 
 type Edit = { start: number; end: number; replacement: string };
 
-type QiHit = {
-  type:
-    | 'exact_age'
-    | 'occupation'
-    | 'employer'
-    | 'family_structure'
-    | 'gender'
-    | 'geo';
-  /** Range to redact if the singling-out check suppresses this QI. */
-  start: number;
-  end: number;
-  placeholder: string;
-};
-
 /** Suppression rank (E.3.3) — most distinctive first. */
-const QI_SUPPRESSION_ORDER: QiHit['type'][] = [
+export const QI_SUPPRESSION_ORDER: QiHit['type'][] = [
+  'rare_attribute',
   'exact_age',
   'occupation',
   'employer',
   'family_structure',
+  'education',
   'gender',
   'geo',
 ];
@@ -172,6 +162,10 @@ export function processRecord(
   input: RecordInput,
   spans: DetectedSpan[],
   versions: PipelineVersions,
+  // Injected per CONVERSATION by processConversation (Build #1) so the same
+  // person keeps the same pseudonym across the chat. The default keeps every
+  // per-prompt caller (and unit test) valid.
+  personPseudonyms: PseudonymMap = new Map(),
 ): PipelineOutcome {
   const text = input.refinedText;
   const sentences = splitSentences(text);
@@ -252,6 +246,8 @@ export function processRecord(
     actionsTaken.add('EXCLUDE');
     return {
       clientRecordId: input.clientRecordId,
+      conversationId: input.conversationId,
+      turnIndex: input.turnIndex,
       outcome: 'excluded',
       reasonCodes: [...reasonCodes],
       finalText: null,
@@ -376,7 +372,6 @@ export function processRecord(
   // --- Steps 3–4: entity actions (components 2 + 3 + 4) ------------------
   const edits: Edit[] = [];
   const qiHits: QiHit[] = [];
-  const personPseudonyms = new Map<string, number>();
 
   const addEdit = (span: DetectedSpan, replacement: string, action: string) => {
     edits.push({ start: span.start, end: span.end, replacement });
@@ -608,16 +603,12 @@ export function processRecord(
   const finalText = materialise(text, sentences, suppressedSentences, edits);
 
   // --- Quality ceilings (E.1.7) — DROP, not EXCLUDE ----------------------
-  const tokens = finalText.split(/\s+/).filter((token) => token.length > 0);
-  const placeholderCount = tokens.filter((token) =>
-    PLACEHOLDER_TOKEN.test(token),
-  ).length;
-  const realTokens = tokens.length - placeholderCount;
-
   const drop = (code: string): PipelineOutcome => {
     reasonCodes.add(code);
     return {
       clientRecordId: input.clientRecordId,
+      conversationId: input.conversationId,
+      turnIndex: input.turnIndex,
       outcome: 'dropped',
       reasonCodes: [...reasonCodes],
       finalText: null,
@@ -628,16 +619,13 @@ export function processRecord(
     };
   };
 
-  if (realTokens < MIN_REAL_TOKENS) return drop('DROP_TOO_SHORT');
-  if (
-    tokens.length > 0 &&
-    placeholderCount / tokens.length > REDACTION_DENSITY_CEILING
-  ) {
-    return drop('DROP_REDACTION_DENSITY');
-  }
+  const ceilingCode = qualityCeilingCode(finalText);
+  if (ceilingCode) return drop(ceilingCode);
 
   return {
     clientRecordId: input.clientRecordId,
+    conversationId: input.conversationId,
+    turnIndex: input.turnIndex,
     outcome: 'kept',
     reasonCodes: [...reasonCodes],
     finalText,
@@ -645,10 +633,36 @@ export function processRecord(
       suppressedSentences.size > 0 ? 'suppressed' : 'none',
     ),
     operatorLog,
+    // Rides the in-memory outcome ONLY for the conversation-wide
+    // singling-out step (Build #1b); the service never persists it (E.1.8).
+    rework: {
+      text,
+      suppressedSentences: [...suppressedSentences],
+      edits,
+      qiHits: qiHits.filter((hit) => !suppressedQiTypes.includes(hit.type)),
+    },
   };
 }
 
-function materialise(
+/** E.1.7 ceilings, shared with the conversation-wide re-materialise path. */
+export function qualityCeilingCode(finalText: string): string | null {
+  const tokens = finalText.split(/\s+/).filter((token) => token.length > 0);
+  const placeholderCount = tokens.filter((token) =>
+    PLACEHOLDER_TOKEN.test(token),
+  ).length;
+  const realTokens = tokens.length - placeholderCount;
+
+  if (realTokens < MIN_REAL_TOKENS) return 'DROP_TOO_SHORT';
+  if (
+    tokens.length > 0 &&
+    placeholderCount / tokens.length > REDACTION_DENSITY_CEILING
+  ) {
+    return 'DROP_REDACTION_DENSITY';
+  }
+  return null;
+}
+
+export function materialise(
   text: string,
   sentences: { index: number; start: number; end: number }[],
   suppressedSentences: Set<number>,

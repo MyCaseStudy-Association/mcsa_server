@@ -9,8 +9,19 @@ export function chainHash(
   prevHash: string | null,
   payload: AttestationPayload,
 ): string {
+  return extendChain(prevHash, JSON.stringify(payload));
+}
+
+/**
+ * FR-5.3: the same chain construction, reused to link Stage 7 packaged
+ * records onto the attestation chain tail (metadata JSON only, never text).
+ */
+export function extendChain(
+  prevHash: string | null,
+  payloadJson: string,
+): string {
   return createHash('sha256')
     .update(prevHash ?? 'genesis')
-    .update(JSON.stringify(payload))
+    .update(payloadJson)
     .digest('hex');
 }

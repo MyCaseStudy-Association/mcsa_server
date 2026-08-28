@@ -48,6 +48,56 @@ model DeidAttestation {
   @@map("deid_attestations")
 }
 
+// ---------------------------------------------------------------------------
+// Build #4 — consent receipt (§5.2, FR-5.1, INV-7). ONE per conversation
+// (APP-D-08), Kantara / ISO 27560 pattern. The payload is the canonical
+// receipt JSON (pseudonymous contributor id + fingerprints — no raw
+// identity, no content); the signature binds receipt ↔ fingerprints.
+// ---------------------------------------------------------------------------
+
+model ConsentReceipt {
+  id         String    @id @default(uuid()) @db.Uuid
+  receiptRef String    @unique @map("receipt_ref") @db.VarChar(64)
+  userId     String    @map("user_id") @db.Uuid
+  payload    Json
+  signature  String    @db.VarChar(128)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId])
+  @@map("consent_receipts")
+}
+
+// ---------------------------------------------------------------------------
+// Build #2 — Stage 7 packaged record: ONE conversation bundle, de-identified
+// prompts in original order (Crossing (2): the de-identified record, the
+// consent receipt ref, and provenance are the ONLY things that persist —
+// INV-1). chainHash links the bundle into the attestation hash chain
+// (FR-5.3). internalConversationRef is internal-only; the buyer-scoped
+// conversation_id is derived per buyer at delivery time, never stored here.
+// ---------------------------------------------------------------------------
+
+model PackagedRecord {
+  id                      String   @id @default(uuid()) @db.Uuid
+  recordRef               String   @unique @map("record_ref") @db.VarChar(64)
+  userId                  String   @map("user_id") @db.Uuid
+  internalConversationRef String   @map("internal_conversation_ref") @db.VarChar(200)
+  consentReceiptRef       String   @map("consent_receipt_ref") @db.VarChar(64)
+  language                String   @db.VarChar(16)
+  capturedWindow          String   @map("captured_window") @db.VarChar(16)
+  domainTags              Json     @map("domain_tags")
+  prompts                 Json // de-identified prompts, in order (INV-2: prompts-only)
+  turnIndexes             Json     @map("turn_indexes")
+  status                  String   @default("available") @db.VarChar(16) // available | sold | revoked
+  prevHash                String?  @map("prev_hash") @db.VarChar(64)
+  chainHash               String   @map("chain_hash") @db.VarChar(64)
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([userId, internalConversationRef])
+  @@index([status])
+  @@map("packaged_records")
+}
+
 model RefreshToken {
   id        String    @id @default(uuid()) @db.Uuid
   userId    String    @map("user_id") @db.Uuid

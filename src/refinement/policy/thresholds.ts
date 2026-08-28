@@ -30,3 +30,21 @@ export const MIN_REAL_TOKENS = 10;
 
 /** Singling-out check (E.3.3): more distinct QI types than this → suppress. */
 export const MAX_QI_TYPES = 3;
+
+// ---------------------------------------------------------------------------
+// Conversation-wide singling-out (APP-D-15, Build #1b). Thresholds 5/4/8 are
+// PROVISIONAL — calibrate against real data via the eval harness (Testing
+// Plan). Tier A (per-prompt, MAX_QI_TYPES above) is unchanged.
+// ---------------------------------------------------------------------------
+
+/** Tier B: ≥ this many distinct QI types across the bundle → suppress. */
+export const QI_CONVERSATION_SUPPRESS = 5;
+/** Tier B suppresses most-distinctive-first down to ≤ this many. */
+export const QI_CONVERSATION_TARGET = 4;
+/** Tier C backstop: ≥ this many distinct QI types → exclude the conversation. */
+export const QI_CONVERSATION_EXCLUDE = 8;
+
+/** "Gutting" (Tier B → C failover): suppression touches > this share of prompts… */
+export const GUTTING_MAX_TOUCHED_RATIO = 0.4;
+/** …or leaves fewer than this many usable prompts. */
+export const GUTTING_MIN_USABLE_PROMPTS = 2;

@@ -53,10 +53,40 @@ export type Sentence = {
 
 export type RecordInput = {
   clientRecordId: string;
+  /** Groups a contributor's prompts from one chat (APP-D-08, Build #1). */
+  conversationId: string;
+  /** Original position within the chat — order is the product. */
+  turnIndex: number;
   refinedText: string;
   flaggedCategoryIds: string[];
   exactHash: string;
   simHash: string;
+  /** Optional epoch seconds of the source chat's creation (coarsened later). */
+  capturedAt?: number;
+};
+
+/**
+ * One ephemeral pseudonym map per CONVERSATION (E.1.4): "sarah jones" → 1.
+ * Lives only inside processConversation's scope; destroyed after (INV-1).
+ */
+export type PseudonymMap = Map<string, number>;
+
+export type QiType =
+  | 'rare_attribute'
+  | 'exact_age'
+  | 'occupation'
+  | 'employer'
+  | 'family_structure'
+  | 'education'
+  | 'gender'
+  | 'geo';
+
+export type QiHit = {
+  type: QiType;
+  /** Range (original-text offsets) to redact if singling-out suppresses it. */
+  start: number;
+  end: number;
+  placeholder: string;
 };
 
 export type RecordOutcomeKind = 'kept' | 'excluded' | 'dropped';
@@ -101,12 +131,37 @@ export type OperatorLogEntry = {
   detail?: string; // reason code or Q-ID — never content
 };
 
+/**
+ * In-memory working state a kept outcome carries so the conversation-wide
+ * singling-out check (Build #1b) can re-materialise the text with extra
+ * suppressions. Offsets refer to the ORIGINAL refined text. NEVER persisted
+ * or logged — it rides the outcome only until applyConversationSinglingOut
+ * returns (E.1.8).
+ */
+export type OutcomeRework = {
+  /** Original (first-pass-redacted) text. In-memory only. */
+  text: string;
+  suppressedSentences: number[];
+  edits: { start: number; end: number; replacement: string }[];
+  /** QI hits that SURVIVED the per-prompt Tier A check. */
+  qiHits: QiHit[];
+};
+
 export type PipelineOutcome = {
   clientRecordId: string;
+  conversationId: string;
+  turnIndex: number;
   outcome: RecordOutcomeKind;
   reasonCodes: string[];
   /** De-identified text. In-memory only; discarded after the response (INV-1). */
   finalText: string | null;
   attestation: AttestationPayload;
   operatorLog: OperatorLogEntry[];
+  /** Present on kept outcomes only. In-memory only (see OutcomeRework). */
+  rework?: OutcomeRework;
+};
+
+export type ConversationOutcome = {
+  conversationId: string;
+  outcomes: PipelineOutcome[];
 };

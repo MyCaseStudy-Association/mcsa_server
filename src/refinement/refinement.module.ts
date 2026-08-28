@@ -4,6 +4,8 @@ import { JwtModule } from '@nestjs/jwt';
 import { PrismaModule } from '../prisma/prisma.module';
 import { MockDetectorService } from './detector/mock-detector.service';
 import { PresidioDetectorService } from './detector/presidio-detector.service';
+import { PackagingController } from './packaging/packaging.controller';
+import { PackagingService } from './packaging/packaging.service';
 import { RefinementController } from './refinement.controller';
 import { RefinementService } from './refinement.service';
 import { DETECTOR } from './refinement.types';
@@ -17,9 +19,10 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
  */
 @Module({
   imports: [JwtModule.register({}), PrismaModule],
-  controllers: [RefinementController],
+  controllers: [RefinementController, PackagingController],
   providers: [
     RefinementService,
+    PackagingService,
     JwtAuthGuard,
     MockDetectorService,
     PresidioDetectorService,

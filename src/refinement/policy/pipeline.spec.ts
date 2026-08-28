@@ -18,6 +18,8 @@ const VERSIONS: PipelineVersions = {
 async function run(text: string, flags: string[] = []) {
   const input: RecordInput = {
     clientRecordId: 'r1',
+    conversationId: 'conv-1',
+    turnIndex: 0,
     refinedText: text,
     flaggedCategoryIds: flags,
     exactHash: 'a'.repeat(64),

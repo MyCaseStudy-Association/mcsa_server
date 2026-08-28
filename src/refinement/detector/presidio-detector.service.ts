@@ -9,6 +9,7 @@
  */
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { detectAgeAndSecrets } from './custom-recognizers';
 import { DetectedSpan, Detector } from '../refinement.types';
 
 type PresidioResult = {
@@ -63,7 +64,7 @@ export class PresidioDetectorService implements Detector {
     }
 
     const results = (await response.json()) as PresidioResult[];
-    return results.map((result) => ({
+    const spans = results.map((result) => ({
       // Unmapped Presidio labels stay as-is and fail closed downstream
       // (group H: REDACT + log).
       type: PRESIDIO_TYPE_MAP[result.entity_type] ?? result.entity_type,
@@ -72,5 +73,11 @@ export class PresidioDetectorService implements Detector {
       text: text.slice(result.start, result.end),
       confidence: result.score,
     }));
+
+    // Presidio produces neither AGE nor SECRET natively — merge the custom
+    // recognizers so E.2.6, G2, and EXC_LIVE_SECRET fire (gap #3). Overlaps
+    // are resolved by the pipeline's dedupeSpans.
+    spans.push(...detectAgeAndSecrets(text));
+    return spans;
   }
 }
