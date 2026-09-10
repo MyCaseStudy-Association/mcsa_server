@@ -1,0 +1,181 @@
+# Portibilify API server (`mcsa_server/`)
+
+NestJS 11 + Prisma 7 (Postgres via `@prisma/adapter-pg`) + JWT auth + Swagger. Stages 6–7 of the pipeline (server-side de-identification, packaging, consent receipts). The only client is the Expo app in the sibling repository `mcsa/` (separate git repo, own `CLAUDE.md`). Never import from it, never move code between the two, never commit from a parent folder.
+
+## Commands
+
+```bash
+npm run start:dev        # nest --watch on PORT (default 6000) + BROWSER_SAFE_PORT (6001)
+npm run build            # nest build -> dist/ (gitignored, never commit)
+npm run lint             # eslint --fix (typescript-eslint type-checked + prettier)
+npm run format           # prettier --write src/ test/
+npm test                 # jest unit tests: src/**/*.spec.ts
+npm run test:e2e         # test/*.e2e-spec.ts
+npm run prisma:generate  # after ANY schema.prisma change
+npm run prisma:push      # dev-only sync of schema to DATABASE_URL
+npm run prisma:studio
+docker compose -f docker-compose.presidio.yml up -d   # optional Presidio detector
+```
+
+Swagger UI: `http://localhost:6000/api`. Keep it accurate; the app is written against it.
+
+## Client contract
+
+- Ports: `PORT` default `6000`, `BROWSER_SAFE_PORT` default `6001`. The app falls back to the same values, so do not change defaults without changing `mcsa/src/features/auth/services/auth-api.ts`.
+- Swagger at `/api` is the contract. Every handler must be fully decorated so the app can be written against it.
+- Public endpoints (no Bearer): `POST /auth/register|login|refresh|logout`, `GET /packaging/verify/:receiptRef`. Everything else requires `JwtAuthGuard`.
+- Any endpoint added, renamed, or reshaped here must get a matching client change in `mcsa/src/features/<feature>/services/*-api.ts`. List those files in the commit body.
+- If a task needs both a server change and an app change, do the server first and keep each commit independently buildable.
+
+## Directory structure (authoritative)
+
+```text
+mcsa_server/
+  .env                       Local secrets. Gitignored. Never commit, never print values.
+  .prettierrc                singleQuote, trailingComma all. Do not change.
+  eslint.config.mjs          Type-checked lint. Do not weaken rules per-file without a comment.
+  nest-cli.json
+  prisma.config.ts           Prisma 7 config: schema path, migrations path, DATABASE_URL.
+  docker-compose.presidio.yml  Self-hosted Presidio analyzer (no cloud DLP, ever).
+  package.json               Jest config lives here (rootDir src, testRegex .spec.ts).
+  prisma/
+    schema.prisma            Single schema file. All models here.
+    migrations/              Prisma migrations. Never hand-edit an applied migration.
+  src/
+    main.ts                  Bootstrap only: CORS, global ValidationPipe, Swagger, listen.
+    app.module.ts            Root module. Every domain module MUST be registered here.
+    app.controller.ts / app.service.ts   Health/root only. Do not add domain endpoints.
+    prisma/
+      prisma.module.ts       Exports PrismaService.
+      prisma.service.ts      The ONLY PrismaClient instance.
+    users/                   User entity + UsersService (persistence for auth).
+    auth/                    JWT auth: controller, service, guard, types, dto/.
+    refinement/              Stage 6/7 pipeline. Sub-areas:
+      refinement.{module,controller,service,types}.ts
+      dto/                   Request DTOs.
+      detector/              PII detectors (mock, presidio) + custom recognizers + parity spec.
+      policy/                Pure de-identification rules (pipeline, thresholds, singling-out, ...). No Nest imports.
+      attestation/           Hash-chain helpers. Pure.
+      packaging/             Stage 7: packaging controller/service, consent receipts.
+    database/                EMPTY legacy folder. Do not put anything here; delete it when convenient.
+  test/
+    app.e2e-spec.ts
+    jest-e2e.json
+```
+
+## Module layout rule
+
+Every domain lives in `src/<domain>/` and contains, at minimum:
+
+```text
+src/<domain>/
+  <domain>.module.ts        @Module; imports PrismaModule if it touches the DB
+  <domain>.controller.ts    HTTP only: decorators, DTO in, service call, return
+  <domain>.service.ts       Business logic
+  <domain>.types.ts         Shared TS types/interfaces for the domain (optional)
+  dto/<action>.dto.ts       One class per request body, class-validator + @ApiProperty
+  <domain>.service.spec.ts  Unit tests, colocated
+```
+
+Larger domains (like `refinement`) may add named subfolders for pure logic (`policy/`, `detector/`, ...). Subfolders that contain no Nest decorators must stay framework-free so they are testable with plain Jest.
+
+## STRICT rules
+
+### Placement
+
+1. **One domain, one folder, one module.** No controllers or services outside a `src/<domain>/` folder. No "misc" or "common" dumping ground; shared helpers go in the domain that owns them or in a new named domain.
+2. **`main.ts` and `app.module.ts` are wiring only.** No business logic, no inline handlers, no env parsing beyond what is already there.
+3. **Every new module is imported in `app.module.ts`** in the same commit it is created, or it is dead code.
+4. **DTOs live in `dto/` and end in `.dto.ts`.** Every body/query param on an endpoint must be a DTO class. Plain interfaces are not validated by the global pipe and are forbidden for input.
+5. **Database access only through `PrismaService`** injected from `PrismaModule`. Never `new PrismaClient()`, never raw `pg`.
+6. **Pure logic (policy, attestation, hashing) has no Nest imports** and is unit tested.
+7. **`src/database/` stays empty.**
+
+### Naming
+
+8. Files: `<name>.<kind>.ts` where kind is `module | controller | service | guard | types | dto | spec | e2e-spec`. Pure logic files are plain kebab-case (`hash-chain.ts`, `singling-out.ts`).
+9. Classes: PascalCase with the kind as suffix (`RefinementService`, `LoginDto`, `JwtAuthGuard`).
+10. Prisma models: PascalCase in schema, table mapped with `@@map("snake_case_plural")`, columns mapped with `@map("snake_case")`. `id` is `String @id @default(uuid()) @db.Uuid`. Timestamps are `@db.Timestamptz(6)` and named `createdAt` / `updatedAt` / `revokedAt`.
+
+### API contract
+
+11. **Every endpoint has `@ApiTags`, `@ApiOperation({ summary })`, and `@ApiResponse` for its success status.** Non-201 POSTs use `@HttpCode(HttpStatus.OK)`.
+12. **Every endpoint is guarded with `@UseGuards(JwtAuthGuard)` + `@ApiBearerAuth()` unless it is explicitly public.** Public endpoints (currently `auth/register|login|refresh|logout`, `packaging/verify/:receiptRef`) must have a comment `// public: <reason>` above the handler.
+13. **User identity comes only from `request.user.sub`** (typed `AuthenticatedRequest`). Never accept a `userId` in a body or query.
+14. **Do not change a response shape** without updating the matching client in `mcsa/src/features/<feature>/services/`. State the app-side change in the commit body.
+15. Global `ValidationPipe` runs with `whitelist`, `forbidNonWhitelisted`, `transform`. Unknown fields are rejected; do not loosen this.
+
+### Data & privacy (non-negotiable)
+
+16. **Never persist, log, or return raw prompt content or matched entity text.** The proof store holds fingerprints, hashes, attestations, consent receipts, and de-identified prompts only (schema comments cite INV-1, INV-2, INV-9). Any new model or log line that would hold raw content is a rejected change.
+17. **Detection stays in-zone.** Only the mock detector or self-hosted Presidio (`docker-compose.presidio.yml`). No cloud DLP or third-party NLP APIs.
+18. **Secrets from `ConfigService` only** (`getOrThrow` for required values). Never read `process.env` inside services or controllers; `main.ts` is the sole exception. Never hardcode a secret or a connection string.
+19. **Passwords and refresh tokens are stored hashed** (`bcryptjs`). Never store or log plaintext.
+
+### Schema changes
+
+20. Edit `prisma/schema.prisma` only. Then run `npm run prisma:generate` and, for a real migration, `npx prisma migrate dev --name <change>`. `prisma:push` is for local iteration only; a change is not done until a migration exists in `prisma/migrations/`.
+21. Never edit or delete an existing migration folder. Add a new one.
+22. The server must degrade gracefully when the DB is unreachable (results still returned, proofs not persisted). Do not introduce hard DB dependencies on request paths that currently tolerate absence.
+
+### Code style
+
+23. Prettier config is law: single quotes, trailing commas. Run `npm run format` before commit.
+24. Imports are relative (`./`, `../`). No path aliases in this repo. Order: `@nestjs/*`, other packages, blank line, local files.
+25. `any` is allowed by lint but discouraged; prefer `unknown` plus narrowing. `no-floating-promises` warnings must be fixed, not ignored.
+26. Every service method that returns data to the client has an explicit return type.
+27. **Never commit** `dist/`, `coverage/`, `.env*`, `node_modules/`, `.DS_Store`.
+
+## Mandatory checklist for every change
+
+1. **Locate:** name the `src/<domain>/` folder and the file kind before writing. New domain -> follow "Module layout rule" exactly.
+2. **Contract:** if an endpoint or response changes, list the app files that must change too.
+3. **Implement** following the rules above.
+4. **Verify structure:** run the audit below and confirm zero output.
+5. **Run `npm run lint && npm test && npm run build`.** All must pass. If `schema.prisma` changed, `npm run prisma:generate` must have run and a migration must exist.
+6. **Update docs:** this file (tree, public endpoints list, env vars) and `README.md` if any of them changed.
+
+### Structure audit (must print nothing)
+
+```bash
+# controllers/services outside a domain folder
+find src -maxdepth 1 -type f \( -name "*.controller.ts" -o -name "*.service.ts" \) | grep -vE 'src/app\.(controller|service)\.ts$' && echo "DOMAIN FILE AT SRC ROOT"
+# DTOs outside dto/ folders
+find src -name "*.dto.ts" | grep -v '/dto/' && echo "DTO OUTSIDE dto/"
+# PrismaClient instantiated outside prisma.service.ts
+grep -rln "new PrismaClient" src | grep -v 'prisma/prisma.service.ts' && echo "ROGUE PRISMA CLIENT"
+# process.env outside main.ts
+grep -rln "process\.env" src | grep -v 'src/main.ts' && echo "process.env OUTSIDE main.ts"
+# modules not registered in app.module.ts
+for m in $(find src -name "*.module.ts" ! -name "app.module.ts" -exec basename {} .module.ts \;); do grep -q "$m" src/app.module.ts || echo "UNREGISTERED MODULE: $m"; done
+# anything in the legacy database folder
+[ -d src/database ] && [ -n "$(ls -A src/database)" ] && echo "src/database MUST STAY EMPTY"
+# handlers with neither @UseGuards nor a "// public:" comment within 3 lines before/after
+for f in $(find src -name "*.controller.ts" ! -name "app.controller.ts"); do awk -v F="$f" '{L[NR]=$0} END{for(n=1;n<=NR;n++) if(L[n]~/@(Get|Post|Patch|Put|Delete)\(/){ok=0; for(i=n-3;i<=n+3;i++) if(i in L && L[i]~/UseGuards|\/\/ public:/) ok=1; if(!ok) print F":"n": "L[n]}}' "$f"; done
+```
+
+## Environment variables
+
+| Name                     | Required | Notes                                   |
+| ------------------------ | -------- | --------------------------------------- |
+| `DATABASE_URL`           | yes      | Postgres connection string              |
+| `JWT_ACCESS_SECRET`      | yes      |                                         |
+| `JWT_REFRESH_SECRET`     | yes      |                                         |
+| `JWT_ACCESS_EXPIRES_IN`  | yes      | e.g. `15m`                              |
+| `JWT_REFRESH_EXPIRES_IN` | yes      | e.g. `7d`                               |
+| `PORT`                   | no       | default 6000                            |
+| `BROWSER_SAFE_PORT`      | no       | default 6001                            |
+| `CORS_ORIGINS`           | no       | comma-separated extra origins           |
+| `DETECTOR`               | no       | `mock` (default) or `presidio`          |
+| `PRESIDIO_URL`           | no       | e.g. `http://localhost:5002`            |
+| `PRESIDIO_VERSION`       | no       | analyzer version label for attestations |
+
+Adding a variable: read it via `ConfigService`, document it in this table, and add a placeholder line to `README.md`.
+
+## Recipes
+
+**New domain `foo`:** `src/foo/foo.module.ts`, `foo.controller.ts`, `foo.service.ts`, `dto/create-foo.dto.ts`, `foo.service.spec.ts`. Register in `app.module.ts`. Guard every handler. Add Swagger decorators. Add the matching client in `mcsa/src/features/foo/services/foo-api.ts`.
+
+**New endpoint on an existing domain:** DTO first, then service method with explicit return type, then controller handler with guard + Swagger. Update the public-endpoint list in rule 12 if it is public.
+
+**New Prisma model:** add to `schema.prisma` with `@@map` / `@map`, uuid id, timestamptz timestamps, index on `userId`. Confirm it stores no raw content (rule 16). `prisma:generate`, migrate, then use via `PrismaService`.

@@ -28,6 +28,7 @@ export class PackagingController {
     return this.packagingService.buildBatch(buyerRef ?? 'buyer_test');
   }
 
+  // public: buyers verify a consent receipt without an account
   @Get('verify/:receiptRef')
   @ApiOperation({
     summary:

@@ -29,6 +29,7 @@ import type { AuthenticatedRequest } from './jwt-auth.guard';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  // public: account creation
   @Post('register')
   @ApiOperation({ summary: 'Create account and receive auth tokens' })
   @ApiBody({ type: RegisterDto })
@@ -37,6 +38,7 @@ export class AuthController {
     return this.authService.register(registerDto);
   }
 
+  // public: credential exchange
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Login and receive auth tokens' })
@@ -46,6 +48,7 @@ export class AuthController {
     return this.authService.login(loginDto);
   }
 
+  // public: token rotation, refresh token is the credential
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Rotate refresh token and receive new tokens' })
@@ -55,6 +58,7 @@ export class AuthController {
     return this.authService.refresh(refreshTokenDto);
   }
 
+  // public: revokes the supplied refresh token
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Revoke a refresh token' })
