@@ -35,12 +35,16 @@ lerna-debug.log*
 !.vscode/launch.json
 !.vscode/extensions.json
 
-# dotenv environment variable files
+# dotenv environment variable files (.env.example IS committed)
 .env
+.env.tmp
 .env.development.local
 .env.test.local
 .env.production.local
 .env.local
+
+# TLS certificates for the database (environment-specific, see .env.example)
+/certs
 
 # temp directory
 .temp

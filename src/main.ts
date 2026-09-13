@@ -43,7 +43,11 @@ async function bootstrap() {
 
   app.enableCors({
     origin: (origin, callback) => {
-      if (!origin || allowedCorsOrigins.has(origin) || isLocalhostOrigin(origin)) {
+      if (
+        !origin ||
+        allowedCorsOrigins.has(origin) ||
+        isLocalhostOrigin(origin)
+      ) {
         callback(null, true);
         return;
       }
@@ -70,7 +74,9 @@ async function bootstrap() {
   SwaggerModule.setup('api', app, swaggerDocument);
 
   const port = Number(process.env.PORT ?? DEFAULT_PORT);
-  const browserSafePort = Number(process.env.BROWSER_SAFE_PORT ?? DEFAULT_BROWSER_SAFE_PORT);
+  const browserSafePort = Number(
+    process.env.BROWSER_SAFE_PORT ?? DEFAULT_BROWSER_SAFE_PORT,
+  );
 
   await app.listen(port);
 

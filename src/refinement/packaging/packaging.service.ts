@@ -12,7 +12,7 @@
  * stored.
  */
 import { createHmac, randomUUID } from 'node:crypto';
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { extendChain } from '../attestation/hash-chain';
@@ -47,21 +47,23 @@ const DEID_ASSURANCE =
 
 @Injectable()
 export class PackagingService {
-  private readonly logger = new Logger(PackagingService.name);
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-  ) {}
+  ) {
+    // Fail at boot, not at first use: a receipt signed with a guessable key
+    // is not proof (rule 18). `npm run env:init` generates these.
+    for (const name of [
+      'PSEUDONYM_SECRET',
+      'CONSENT_SIGNING_SECRET',
+      'PACKAGING_HMAC_SECRET',
+    ]) {
+      this.config.getOrThrow<string>(name);
+    }
+  }
 
   private secret(name: string): string {
-    const value = this.config.get<string>(name);
-    if (!value) {
-      // Dev fallback only — set real secrets before anything real flows.
-      this.logger.warn(`${name} not set — using dev fallback secret`);
-      return `dev-${name.toLowerCase()}`;
-    }
-    return value;
+    return this.config.getOrThrow<string>(name);
   }
 
   // -------------------------------------------------------------------------
