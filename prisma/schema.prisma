@@ -110,3 +110,68 @@ model RefreshToken {
   @@index([userId])
   @@map("refresh_tokens")
 }
+
+// ---------------------------------------------------------------------------
+// Stage 8 — Build #5: buyer briefs (spec §7.4 FR-4.1/4.2, tracker §5).
+//
+// The FULL brief lives here and never leaves the server (INV-8). The device
+// receives only the minimal matching payload (briefRef + categoryId + spec +
+// quality); buyer identity, price, volume and escrow state never cross
+// (§5.1). A brief is pushed only while `status = live` AND
+// `escrowCommitted = true` (D-16). No brief is ever browsable.
+// ---------------------------------------------------------------------------
+
+model Buyer {
+  id                      String   @id @default(uuid()) @db.Uuid
+  buyerRef                String   @unique @map("buyer_ref") @db.VarChar(64)
+  legalName               String   @map("legal_name") @db.VarChar(200) // internal only — never to the device (INV-6)
+  categoryId              String   @map("category_id") @db.VarChar(64) // taxonomy id — the ONE buyer descriptor that leaves the server
+  categoryTaxonomyVersion String   @map("category_taxonomy_version") @db.VarChar(16)
+  briefs                  Brief[]
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("buyers")
+}
+
+model Brief {
+  id                     String       @id @default(uuid()) @db.Uuid
+  briefRef               String       @unique @map("brief_ref") @db.VarChar(64)
+  buyerId                String       @map("buyer_id") @db.Uuid
+  buyer                  Buyer        @relation(fields: [buyerId], references: [id])
+  status                 String       @default("draft") @db.VarChar(16) // draft | live | paused | filled | expired
+  spec                   Json // { domains, languages, keywordsAny, keywordsAll, keywordsNone, minPromptsPerConversation } — pushed to device
+  quality                Json // { maxRedactionDensity, dedupGuarantee } — maxRedactionDensity pushed to device
+  volume                 Json // { targetConversations, maxPerContributor } — server only
+  pricingScheduleVersion String       @map("pricing_schedule_version") @db.VarChar(16) // server only (price never visits the device)
+  currency               String       @default("USD") @db.VarChar(3)
+  escrowCommitted        Boolean      @default(false) @map("escrow_committed") // D-16 gate for live
+  escrowProviderRef      String?      @map("escrow_provider_ref") @db.VarChar(128)
+  matches                BriefMatch[]
+  expiresAt              DateTime     @map("expires_at") @db.Timestamptz(6)
+  createdAt              DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status])
+  @@map("briefs")
+}
+
+// What the device reports after on-device matching (§5.3): brief + which of
+// the contributor's conversations matched, with prompt counts and
+// fingerprints. Match METADATA only — never spec-evaluation details, never
+// content. Feeds Build #7's QA candidate queue.
+model BriefMatch {
+  id                      String   @id @default(uuid()) @db.Uuid
+  briefId                 String   @map("brief_id") @db.Uuid
+  brief                   Brief    @relation(fields: [briefId], references: [id])
+  userId                  String   @map("user_id") @db.Uuid
+  internalConversationRef String   @map("internal_conversation_ref") @db.VarChar(200)
+  promptCount             Int      @map("prompt_count")
+  fingerprints            Json // exact SHA-256 hashes of the matched prompts, in turn order
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([briefId, userId, internalConversationRef])
+  @@index([userId])
+  @@map("brief_matches")
+}

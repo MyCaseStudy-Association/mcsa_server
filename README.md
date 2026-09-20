@@ -21,6 +21,7 @@ Then create the schema and start:
 ```bash
 npm run prisma:generate
 npx prisma migrate deploy     # applies prisma/migrations to DATABASE_URL
+npx prisma db seed            # Phase-0: one sandbox buyer + one live brief (idempotent)
 npm run start:dev             # http://localhost:6000  (Swagger UI at /api)
 ```
 

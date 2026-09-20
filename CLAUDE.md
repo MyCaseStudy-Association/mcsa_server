@@ -15,6 +15,7 @@ npm run test:e2e         # test/*.e2e-spec.ts
 npm run prisma:generate  # after ANY schema.prisma change
 npm run prisma:push      # dev-only sync of schema to DATABASE_URL
 npm run prisma:studio
+npx prisma db seed       # Phase-0 seed: one sandbox buyer + one LIVE brief (idempotent). Runs prisma/seed.ts.
 docker compose -f docker-compose.presidio.yml up -d   # optional Presidio detector
 ```
 
@@ -25,6 +26,7 @@ Swagger UI: `http://localhost:6000/api`. Keep it accurate; the app is written ag
 - Ports: `PORT` default `6000`, `BROWSER_SAFE_PORT` default `6001`. The app falls back to the same values, so do not change defaults without changing `mcsa/src/features/auth/services/auth-api.ts`.
 - Swagger at `/api` is the contract. Every handler must be fully decorated so the app can be written against it.
 - Public endpoints (no Bearer): `POST /auth/register|login|refresh|logout`, `GET /packaging/verify/:receiptRef`. Everything else requires `JwtAuthGuard`.
+- Briefs (Stage 8, INV-8): `GET /briefs/push` returns the minimal on-device matching payload; `POST /briefs/matches` receives match metadata. There is deliberately no list/search/detail endpoint and no contributor-facing create endpoint — briefs are created by `prisma/seed.ts` (Phase 0) or the admin console (later).
 - Any endpoint added, renamed, or reshaped here must get a matching client change in `mcsa/src/features/<feature>/services/*-api.ts`. List those files in the commit body.
 - If a task needs both a server change and an app change, do the server first and keep each commit independently buildable.
 
@@ -46,6 +48,7 @@ mcsa_server/
   prisma/
     schema.prisma            Single schema file. All models here.
     migrations/              Prisma migrations. Never hand-edit an applied migration.
+    seed.ts                  Phase-0 seed (`npx prisma db seed`): sandbox buyer + live brief via BriefsService (D-16 gate applies).
   src/
     main.ts                  Bootstrap only: CORS, global ValidationPipe, Swagger, listen.
     app.module.ts            Root module. Every domain module MUST be registered here.
@@ -55,6 +58,11 @@ mcsa_server/
       prisma.service.ts      The ONLY PrismaClient instance.
     users/                   User entity + UsersService (persistence for auth).
     auth/                    JWT auth: controller, service, guard, types, dto/.
+    briefs/                  Stage 8 Build #5: buyer briefs (server-only full brief, INV-8), device push payload, match reports.
+      briefs.{module,controller,service,types}.ts
+      taxonomy.ts            Buyer-category taxonomy (versioned, append-only). Pure.
+      push-payload.ts        The ONLY brief shape that leaves the server. Pure, tested against forbidden keys.
+      dto/                   Request DTOs.
     refinement/              Stage 6/7 pipeline. Sub-areas:
       refinement.{module,controller,service,types}.ts
       dto/                   Request DTOs.
