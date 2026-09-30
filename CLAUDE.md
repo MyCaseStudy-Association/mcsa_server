@@ -27,6 +27,7 @@ Swagger UI: `http://localhost:6000/api`. Keep it accurate; the app is written ag
 - Swagger at `/api` is the contract. Every handler must be fully decorated so the app can be written against it.
 - Public endpoints (no Bearer): `POST /auth/register|login|refresh|logout`, `GET /packaging/verify/:receiptRef`. Everything else requires `JwtAuthGuard`.
 - Briefs (Stage 8, INV-8): `GET /briefs/push` returns the minimal on-device matching payload; `POST /briefs/matches` receives match metadata. There is deliberately no list/search/detail endpoint and no contributor-facing create endpoint — briefs are created by `prisma/seed.ts` (Phase 0) or the admin console (later).
+- Valuation (Stage 8 Build #6): `POST /valuation/estimate` takes `{ conversations: [{ short, medium, long }] }` (tier counts of selected, brief-matched, Stage-4-kept prompts; no ids, no text) and returns `{ lowCents, highCents, currency, scheduleVersion }`. All money is integer cents; the app formats `$X.XX`.
 - Any endpoint added, renamed, or reshaped here must get a matching client change in `mcsa/src/features/<feature>/services/*-api.ts`. List those files in the commit body.
 - If a task needs both a server change and an app change, do the server first and keep each commit independently buildable.
 
@@ -63,6 +64,13 @@ mcsa_server/
       taxonomy.ts            Buyer-category taxonomy (versioned, append-only). Pure.
       push-payload.ts        The ONLY brief shape that leaves the server. Pure, tested against forbidden keys.
       dto/                   Request DTOs.
+    valuation/               Stage 8 Build #6: rough estimate (POST /valuation/estimate, stateless, no DB) + precise valuation (wired by Build #7).
+      valuation.{module,controller,service,types}.ts
+      pricing-schedule.ts    Versioned NET tier prices in integer cents + attrition. Pure. Every change bumps the version.
+      tiers.ts               Word count + tier rules. Pure. Mirrored in the app; both run the same parity vectors.
+      estimate.ts            Range from per-conversation tier counts. Pure.
+      precise-valuation.ts   The one binding valuation (after QA). Pure.
+      dto/                   Request DTO + Swagger response schema.
     refinement/              Stage 6/7 pipeline. Sub-areas:
       refinement.{module,controller,service,types}.ts
       dto/                   Request DTOs.
