@@ -12,7 +12,12 @@ export class PrismaService
   implements OnModuleInit, OnModuleDestroy
 {
   constructor(configService: ConfigService) {
-    super({ adapter: new PrismaPg(buildPoolConfig(configService)) });
+    const url = new URL(configService.getOrThrow<string>('DATABASE_URL'));
+    super({
+      adapter: new PrismaPg(buildPoolConfig(configService), {
+        schema: url.searchParams.get('schema') ?? 'public',
+      }),
+    });
   }
 
   async onModuleInit(): Promise<void> {
