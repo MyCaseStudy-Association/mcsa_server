@@ -116,6 +116,7 @@ export class QaService {
         userId,
         internalConversationRef,
         packagedRecordRef: record?.recordRef ?? null,
+        packagedChainHash: record?.chainHash ?? null,
         status: result.pass ? 'passed' : 'failed',
         failures: result.failures,
         language: candidate.language,

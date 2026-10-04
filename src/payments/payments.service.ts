@@ -232,6 +232,7 @@ export class PaymentsService {
     let intent: Stripe.PaymentIntent | undefined;
     let outcome: 'paid' | 'refunded' | 'disputed' | 'failed' | undefined;
     let sessionId: string | undefined;
+    let refundedAmountCents = 0;
     if (
       [
         'checkout.session.completed',
@@ -272,6 +273,7 @@ export class PaymentsService {
         throw new ServiceUnavailableException(
           'Stripe charge is not available yet.',
         );
+      refundedAmountCents = charge.amount_refunded;
       outcome = charge.disputed
         ? 'disputed'
         : charge.amount_refunded > 0
@@ -289,6 +291,8 @@ export class PaymentsService {
       );
       paymentId = intent.metadata.paymentId;
       outcome = event.type === 'charge.refunded' ? 'refunded' : 'disputed';
+      if (event.type === 'charge.refunded')
+        refundedAmountCents = event.data.object.amount_refunded;
     } else return { received: true };
     if (!paymentId || !intent || !outcome) return { received: true };
     const verifiedIntent = intent;
@@ -329,7 +333,18 @@ export class PaymentsService {
               sessionId,
             },
           });
-          if (updated.count)
+          if (updated.count) {
+            await tx.fundLedgerEntry.upsert({
+              where: { eventKey: `funding:${payment.id}` },
+              create: {
+                paymentId: payment.id,
+                eventKey: `funding:${payment.id}`,
+                kind: 'funded',
+                amountCents: payment.amountCents,
+                reference: verifiedIntent.id,
+              },
+              update: {},
+            });
             await tx.brief.update({
               where: { id: payment.briefId },
               data: {
@@ -337,7 +352,19 @@ export class PaymentsService {
                 escrowProviderRef: verifiedIntent.id,
               },
             });
+          }
         } else {
+          await tx.fundLedgerEntry.upsert({
+            where: { eventKey: `funding-event:${event.id}` },
+            create: {
+              paymentId: payment.id,
+              eventKey: `funding-event:${event.id}`,
+              kind: 'funding_review',
+              amountCents: refundedAmountCents || 0,
+              reference: verifiedIntent.id,
+            },
+            update: {},
+          });
           await tx.briefPayment.update({
             where: { id: payment.id },
             data: {

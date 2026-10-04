@@ -12,8 +12,13 @@
  * stored.
  */
 import { createHmac, randomUUID } from 'node:crypto';
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { extendChain } from '../attestation/hash-chain';
 import {
@@ -158,41 +163,56 @@ export class PackagingService {
     });
     const chainHash = extendChain(attestationChainTail, chainPayload);
 
-    await this.prisma.packagedRecord.upsert({
-      where: {
-        userId_internalConversationRef: {
-          userId,
-          internalConversationRef: conversation.conversationId,
-        },
+    const stored = await this.prisma.$transaction(
+      async (tx) => {
+        const existing = await tx.packagedRecord.findUnique({
+          where: {
+            userId_internalConversationRef: {
+              userId,
+              internalConversationRef: conversation.conversationId,
+            },
+          },
+        });
+        if (existing?.status === 'sold')
+          throw new ConflictException('Sold contributions cannot be replaced.');
+        return tx.packagedRecord.upsert({
+          where: {
+            userId_internalConversationRef: {
+              userId,
+              internalConversationRef: conversation.conversationId,
+            },
+          },
+          create: {
+            recordRef,
+            userId,
+            internalConversationRef: conversation.conversationId,
+            consentReceiptRef: receiptRef,
+            language,
+            capturedWindow: coarsenToQuarter(capturedAt),
+            domainTags,
+            prompts,
+            turnIndexes,
+            prevHash: attestationChainTail,
+            chainHash,
+          },
+          // Re-upload of the same conversation before dedup (FR-2.3) lands:
+          // replace the bundle with the latest processing. Sold records are
+          // final (D-18) — never overwritten.
+          update: {
+            consentReceiptRef: receiptRef,
+            prompts,
+            turnIndexes,
+            language,
+            domainTags,
+            prevHash: attestationChainTail,
+            chainHash,
+            status: 'available',
+          },
+        });
       },
-      create: {
-        recordRef,
-        userId,
-        internalConversationRef: conversation.conversationId,
-        consentReceiptRef: receiptRef,
-        language,
-        capturedWindow: coarsenToQuarter(capturedAt),
-        domainTags,
-        prompts,
-        turnIndexes,
-        prevHash: attestationChainTail,
-        chainHash,
-      },
-      // Re-upload of the same conversation before dedup (FR-2.3) lands:
-      // replace the bundle with the latest processing. Sold records are
-      // final (D-18) — never overwritten.
-      update: {
-        consentReceiptRef: receiptRef,
-        prompts,
-        turnIndexes,
-        language,
-        domainTags,
-        prevHash: attestationChainTail,
-        chainHash,
-        status: 'available',
-      },
-    });
-    return recordRef;
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+    return stored.recordRef;
   }
 
   // -------------------------------------------------------------------------
@@ -321,28 +341,26 @@ export class PackagingService {
       throw new NotFoundException('Consent receipt not found.');
     }
 
-    const record = await this.prisma.packagedRecord.findFirst({
-      where: { userId, consentReceiptRef: receiptRef },
-    });
-    if (record?.status === 'sold') {
-      return { revoked: false, reason: 'sold_is_final' };
-    }
-
-    await this.prisma.$transaction([
-      this.prisma.consentReceipt.update({
-        where: { receiptRef },
-        data: { revokedAt: new Date() },
-      }),
-      ...(record
-        ? [
-            this.prisma.packagedRecord.update({
-              where: { id: record.id },
-              data: { status: 'revoked' },
-            }),
-          ]
-        : []),
-    ]);
-    return { revoked: true };
+    return this.prisma.$transaction(
+      async (tx) => {
+        const record = await tx.packagedRecord.findFirst({
+          where: { userId, consentReceiptRef: receiptRef },
+        });
+        if (record?.status === 'sold')
+          return { revoked: false, reason: 'sold_is_final' };
+        if (record)
+          await tx.packagedRecord.update({
+            where: { id: record.id },
+            data: { status: 'revoked' },
+          });
+        await tx.consentReceipt.update({
+          where: { receiptRef },
+          data: { revokedAt: new Date() },
+        });
+        return { revoked: true };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
   }
 }
 

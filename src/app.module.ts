@@ -1,3 +1,4 @@
+import { SettlementModule } from './settlement/settlement.module';
 import { PaymentsModule } from './payments/payments.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
@@ -22,6 +23,7 @@ import { ValuationModule } from './valuation/valuation.module';
     ValuationModule,
     SaleModule,
     PaymentsModule,
+    SettlementModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -36,6 +36,7 @@ const payment = {
 };
 function setup() {
   const db = {
+    fundLedgerEntry: { upsert: jest.fn().mockResolvedValue({}) },
     user: { findUnique: jest.fn().mockResolvedValue({ role: 'admin' }) },
     brief: {
       findUnique: jest.fn().mockResolvedValue(brief),

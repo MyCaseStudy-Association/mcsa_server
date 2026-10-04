@@ -13,15 +13,17 @@ enum UserRole {
 }
 
 model User {
-  id            String         @id @default(uuid()) @db.Uuid
-  name          String?        @db.VarChar(120)
-  email         String         @unique @db.VarChar(254)
-  passwordHash  String         @map("password_hash")
-  role          UserRole       @default(user)
-  buyer         Buyer?
-  refreshTokens RefreshToken[]
-  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  contributorAccount ContributorAccount?
+  fundAllocations    FundAllocation[]
+  id                 String              @id @default(uuid()) @db.Uuid
+  name               String?             @db.VarChar(120)
+  email              String              @unique @db.VarChar(254)
+  passwordHash       String              @map("password_hash")
+  role               UserRole            @default(user)
+  buyer              Buyer?
+  refreshTokens      RefreshToken[]
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("users")
 }
@@ -145,24 +147,24 @@ model Buyer {
 }
 
 model Brief {
-  fundingAmountCents     Int?         @map("funding_amount_cents")
+  fundingAmountCents     Int?          @map("funding_amount_cents")
   payment                BriefPayment?
-  id                     String       @id @default(uuid()) @db.Uuid
-  briefRef               String       @unique @map("brief_ref") @db.VarChar(64)
-  buyerId                String       @map("buyer_id") @db.Uuid
-  buyer                  Buyer        @relation(fields: [buyerId], references: [id])
-  status                 String       @default("draft") @db.VarChar(16) // draft | live | paused | filled | expired
+  id                     String        @id @default(uuid()) @db.Uuid
+  briefRef               String        @unique @map("brief_ref") @db.VarChar(64)
+  buyerId                String        @map("buyer_id") @db.Uuid
+  buyer                  Buyer         @relation(fields: [buyerId], references: [id])
+  status                 String        @default("draft") @db.VarChar(16) // draft | live | paused | filled | expired
   spec                   Json // { domains, languages, keywordsAny, keywordsAll, keywordsNone, minPromptsPerConversation } — pushed to device
   quality                Json // { maxRedactionDensity, dedupGuarantee } — maxRedactionDensity pushed to device
   volume                 Json // { targetConversations, maxPerContributor } — server only
-  pricingScheduleVersion String       @map("pricing_schedule_version") @db.VarChar(16) // server only (price never visits the device)
-  currency               String       @default("USD") @db.VarChar(3)
-  escrowCommitted        Boolean      @default(false) @map("escrow_committed") // D-16 gate for live
-  escrowProviderRef      String?      @map("escrow_provider_ref") @db.VarChar(128)
+  pricingScheduleVersion String        @map("pricing_schedule_version") @db.VarChar(16) // server only (price never visits the device)
+  currency               String        @default("USD") @db.VarChar(3)
+  escrowCommitted        Boolean       @default(false) @map("escrow_committed") // D-16 gate for live
+  escrowProviderRef      String?       @map("escrow_provider_ref") @db.VarChar(128)
   matches                BriefMatch[]
-  expiresAt              DateTime     @map("expires_at") @db.Timestamptz(6)
-  createdAt              DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt              DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  expiresAt              DateTime      @map("expires_at") @db.Timestamptz(6)
+  createdAt              DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([status])
   @@map("briefs")
@@ -201,26 +203,28 @@ model BriefMatch {
 // ---------------------------------------------------------------------------
 
 model QaResult {
-  id                      String     @id @default(uuid()) @db.Uuid
-  briefMatchId            String     @unique @map("brief_match_id") @db.Uuid
-  briefMatch              BriefMatch @relation(fields: [briefMatchId], references: [id], onDelete: Cascade)
-  briefId                 String     @map("brief_id") @db.Uuid
-  userId                  String     @map("user_id") @db.Uuid
-  internalConversationRef String     @map("internal_conversation_ref") @db.VarChar(200)
-  packagedRecordRef       String?    @map("packaged_record_ref") @db.VarChar(64)
-  status                  String     @db.VarChar(16) // passed | failed
+  packagedChainHash       String?         @map("packaged_chain_hash")
+  allocation              FundAllocation?
+  id                      String          @id @default(uuid()) @db.Uuid
+  briefMatchId            String          @unique @map("brief_match_id") @db.Uuid
+  briefMatch              BriefMatch      @relation(fields: [briefMatchId], references: [id], onDelete: Cascade)
+  briefId                 String          @map("brief_id") @db.Uuid
+  userId                  String          @map("user_id") @db.Uuid
+  internalConversationRef String          @map("internal_conversation_ref") @db.VarChar(200)
+  packagedRecordRef       String?         @map("packaged_record_ref") @db.VarChar(64)
+  status                  String          @db.VarChar(16) // passed | failed
   failures                Json // QaFailureCode[] — codes only
-  language                String     @db.VarChar(16)
-  redactionDensity        Float      @map("redaction_density")
-  dedupStatus             String     @map("dedup_status") @db.VarChar(24) // new | exact_duplicate | near_duplicate
-  tierCounts              Json?      @map("tier_counts") // passed only
-  amountCents             Int?       @map("amount_cents") // passed only — NET integer cents (D-33)
-  pricingScheduleVersion  String?    @map("pricing_schedule_version") @db.VarChar(16)
-  qaVersion               String     @map("qa_version") @db.VarChar(16)
-  dedupVersion            String     @map("dedup_version") @db.VarChar(16)
-  passedAt                DateTime?  @map("passed_at") @db.Timestamptz(6)
-  createdAt               DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt               DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  language                String          @db.VarChar(16)
+  redactionDensity        Float           @map("redaction_density")
+  dedupStatus             String          @map("dedup_status") @db.VarChar(24) // new | exact_duplicate | near_duplicate
+  tierCounts              Json?           @map("tier_counts") // passed only
+  amountCents             Int?            @map("amount_cents") // passed only — NET integer cents (D-33)
+  pricingScheduleVersion  String?         @map("pricing_schedule_version") @db.VarChar(16)
+  qaVersion               String          @map("qa_version") @db.VarChar(16)
+  dedupVersion            String          @map("dedup_version") @db.VarChar(16)
+  passedAt                DateTime?       @map("passed_at") @db.Timestamptz(6)
+  createdAt               DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([briefId, status])
   @@index([userId])
@@ -229,22 +233,92 @@ model QaResult {
 
 // Stripe funding ledger. No card details or webhook payloads are stored.
 model BriefPayment {
-  id String @id @default(uuid()) @db.Uuid
-  briefId String @unique @map("brief_id") @db.Uuid
-  brief Brief @relation(fields: [briefId], references: [id])
-  amountCents Int @map("amount_cents")
-  currency String @default("usd") @db.VarChar(3)
-  status String @default("pending") @db.VarChar(24)
-  attempt Int @default(1)
-  sessionId String? @unique @map("session_id")
-  paymentIntentId String? @unique @map("payment_intent_id")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  allocations     FundAllocation[]
+  refund          FundRefund?
+  ledger          FundLedgerEntry[]
+  id              String            @id @default(uuid()) @db.Uuid
+  briefId         String            @unique @map("brief_id") @db.Uuid
+  brief           Brief             @relation(fields: [briefId], references: [id])
+  amountCents     Int               @map("amount_cents")
+  currency        String            @default("usd") @db.VarChar(3)
+  status          String            @default("pending") @db.VarChar(24)
+  attempt         Int               @default(1)
+  sessionId       String?           @unique @map("session_id")
+  paymentIntentId String?           @unique @map("payment_intent_id")
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
   @@map("brief_payments")
 }
+
 model StripeEvent {
-  id String @id
-  type String @db.VarChar(120)
+  id        String   @id
+  type      String   @db.VarChar(120)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
   @@map("stripe_events")
+}
+
+model ContributorAccount {
+  user            User     @relation(fields: [userId], references: [id])
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @unique @map("user_id") @db.Uuid
+  stripeAccountId String?  @unique @map("stripe_account_id")
+  country         String   @db.VarChar(2)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("contributor_accounts")
+}
+
+model FundAllocation {
+  activeRecordRef String?      @unique @map("active_record_ref")
+  payment         BriefPayment @relation(fields: [paymentId], references: [id])
+  qa              QaResult     @relation(fields: [qaId], references: [id])
+  user            User         @relation(fields: [userId], references: [id])
+  id              String       @id @default(uuid()) @db.Uuid
+  paymentId       String       @map("payment_id") @db.Uuid
+  qaId            String       @unique @map("qa_id") @db.Uuid
+  userId          String       @map("user_id") @db.Uuid
+  recordRef       String       @map("record_ref")
+  chainHash       String       @map("chain_hash")
+  amountCents     Int          @map("amount_cents")
+  status          String       @default("reserved") @db.VarChar(24)
+  transferId      String?      @unique @map("transfer_id")
+  destination     String?
+  sourceCharge    String?      @map("source_charge")
+  approvedBy      String?      @map("approved_by") @db.Uuid
+  startedAt       DateTime?    @map("started_at") @db.Timestamptz(6)
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([paymentId, status])
+  @@index([userId])
+  @@map("fund_allocations")
+}
+
+model FundRefund {
+  payment        BriefPayment @relation(fields: [paymentId], references: [id])
+  id             String       @id @default(uuid()) @db.Uuid
+  paymentId      String       @unique @map("payment_id") @db.Uuid
+  amountCents    Int          @map("amount_cents")
+  status         String       @default("pending") @db.VarChar(24)
+  stripeRefundId String?      @unique @map("stripe_refund_id")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("fund_refunds")
+}
+
+model FundLedgerEntry {
+  payment     BriefPayment @relation(fields: [paymentId], references: [id])
+  id          String       @id @default(uuid()) @db.Uuid
+  paymentId   String       @map("payment_id") @db.Uuid
+  eventKey    String       @unique @map("event_key")
+  kind        String       @db.VarChar(32)
+  amountCents Int          @map("amount_cents")
+  reference   String?
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([paymentId, createdAt])
+  @@map("fund_ledger_entries")
 }

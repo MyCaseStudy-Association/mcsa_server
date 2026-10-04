@@ -71,3 +71,7 @@ Role checks: `src/auth/roles.spec.ts`; ownership and validation checks: `src/bri
 ## Stripe payments
 
 Buyer funding now uses Stripe Checkout and signed webhooks. Configure the server keys and webhook listener using [STRIPE_SETUP.md](STRIPE_SETUP.md). Missing Stripe configuration leaves checkout disabled while the rest of the server continues working.
+
+### Contributor funding and settlement
+
+See [SETTLEMENT_SETUP.md](SETTLEMENT_SETUP.md) for Stripe Connect configuration, admin-approved allocation/release, expiry refunds, recovery behavior and operational limits. Distribution is disabled until explicitly configured. The role-specific Funds/Earnings screens are available in the webapp at `/dashboard/funds`.
