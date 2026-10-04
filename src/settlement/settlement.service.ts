@@ -98,7 +98,7 @@ export class SettlementService {
   }
 
   async onboard(userId: string, country: string): Promise<{ url: string }> {
-    await this.role(userId, 'user');
+    const user = await this.role(userId, 'user');
     const stripe = this.stripe();
     const allowed = (this.config.get<string>('STRIPE_CONNECT_COUNTRIES') || '')
       .split(',')
@@ -128,29 +128,42 @@ export class SettlementService {
       );
     if (!row.stripeAccountId) {
       this.checkRecovery(row.createdAt);
-      const account = await stripe.accounts.create(
+      const account = await stripe.v2.core.accounts.create(
         {
-          country,
-          controller: {
-            fees: { payer: 'application' },
-            losses: { payments: 'application' },
-            stripe_dashboard: { type: 'express' },
+          contact_email: user.email,
+          identity: { country },
+          dashboard: 'express',
+          defaults: {
+            responsibilities: {
+              fees_collector: 'application',
+              losses_collector: 'application',
+            },
           },
-          capabilities: { transfers: { requested: true } },
+          configuration: {
+            recipient: {
+              capabilities: {
+                stripe_balance: { stripe_transfers: { requested: true } },
+              },
+            },
+          },
           metadata: { contributorRef: row.id },
         },
-        { idempotencyKey: `connect:${row.id}` },
+        { idempotencyKey: `connect-v2:${row.id}` },
       );
       row = await this.prisma.contributorAccount.update({
         where: { id: row.id },
         data: { stripeAccountId: account.id },
       });
     }
-    const link = await stripe.accountLinks.create({
+    const link = await stripe.v2.core.accountLinks.create({
       account: row.stripeAccountId!,
-      type: 'account_onboarding',
-      refresh_url: `${origin.origin}/dashboard/funds?connect=refresh`,
-      return_url: `${origin.origin}/dashboard/funds?connect=return`,
+      use_case: {
+        type: 'account_onboarding',
+        account_onboarding: {
+          refresh_url: `${origin.origin}/dashboard/funds?connect=refresh`,
+          return_url: `${origin.origin}/dashboard/funds?connect=return`,
+        },
+      },
     });
     return { url: link.url };
   }
@@ -184,6 +197,10 @@ export class SettlementService {
           ? 'ready'
           : 'onboarding_required',
       country: row.country,
+      connected: true,
+      transfersEnabled: account.capabilities?.transfers === 'active',
+      requirementsDue: account.requirements?.currently_due ?? [],
+      pendingVerification: account.requirements?.pending_verification ?? [],
       payoutsEnabled: account.payouts_enabled,
     };
   }

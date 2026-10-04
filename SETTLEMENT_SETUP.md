@@ -10,7 +10,7 @@ Implemented in `src/settlement/`. This is platform funding and Stripe Connect se
 4. Set `SETTLEMENT_ENABLED=true` and restart the server only when ready. The default is disabled. Keep the server running for the once-per-minute settlement worker.
 5. Retain the existing signature-verified Checkout/refund/dispute webhook endpoint and subscriptions. Connect account readiness is retrieved directly from Stripe. Contributors can inspect bank payouts through their Stripe dashboard link.
 
-The implementation uses Accounts v1 with controller properties and an Express dashboard, requesting the transfers capability. No identity documents or bank details are stored locally. Only country, user reference and connected account ID are stored.
+The implementation creates Accounts v2 recipients with an Express dashboard, the authenticated contributor’s contact email, and the stripe_balance.stripe_transfers capability. Fees and loss responsibility remain application. Onboarding links use v2; payout readiness and Express login links use the supported v1 interoperability APIs. No identity documents or bank details are stored locally. Only country, user reference and connected account ID are stored.
 
 ## Policy and workflow
 
@@ -47,3 +47,9 @@ References:
 - https://docs.stripe.com/connect/separate-charges-and-transfers
 - https://docs.stripe.com/connect/migrate-to-controller-properties
 - https://docs.stripe.com/connect/express-dashboard
+
+## Accounts v2 migration
+
+New accounts use a stable `connect-v2:<contributor-reference>` idempotency key. Existing stored Stripe account IDs are reused. The previous v1 policy-rejection retry is removed. The reported legacy requests were definitively rejected; any other legacy creation with an uncertain outcome must be reconciled in Stripe before retrying with v2. Never delete account references to retry onboarding. The 23-hour recovery guard remains in place.
+
+References: https://docs.stripe.com/connect/accounts-v2

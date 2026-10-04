@@ -69,6 +69,13 @@ function setup() {
     },
     fundLedgerEntry: { upsert: jest.fn() },
     contributorAccount: {
+      upsert: jest.fn().mockResolvedValue({
+        id: 'ca',
+        country: 'US',
+        createdAt: new Date(),
+        stripeAccountId: null,
+      }),
+      update: jest.fn().mockResolvedValue({ stripeAccountId: 'acct' }),
       findUnique: jest.fn().mockResolvedValue({ stripeAccountId: 'acct' }),
     },
     brief: { update: jest.fn() },
@@ -82,9 +89,21 @@ function setup() {
     new ConfigService({
       SETTLEMENT_ENABLED: 'true',
       STRIPE_SECRET_KEY: 'sk_test_fake',
+      STRIPE_CONNECT_COUNTRIES: 'US',
+      WEB_APP_URL: 'http://localhost:3000',
     }),
   );
   const stripe = {
+    v2: {
+      core: {
+        accounts: { create: jest.fn().mockResolvedValue({ id: 'acct' }) },
+        accountLinks: {
+          create: jest
+            .fn()
+            .mockResolvedValue({ url: 'https://connect.stripe.com/setup' }),
+        },
+      },
+    },
     paymentIntents: {
       retrieve: jest.fn().mockResolvedValue({
         status: 'succeeded',
@@ -93,7 +112,13 @@ function setup() {
         latest_charge: { id: 'ch', disputed: false, amount_refunded: 0 },
       }),
     },
+    accountLinks: {
+      create: jest
+        .fn()
+        .mockResolvedValue({ url: 'https://connect.stripe.com/setup' }),
+    },
     accounts: {
+      create: jest.fn().mockResolvedValue({ id: 'acct' }),
       retrieve: jest.fn().mockResolvedValue({
         id: 'acct',
         capabilities: { transfers: 'active' },
@@ -238,5 +263,91 @@ describe('settlement authorization and accounting', () => {
       },
       { idempotencyKey: 'unused-refund:refund' },
     );
+  });
+});
+
+describe('Accounts v2 onboarding', () => {
+  it('creates a recipient with the authenticated email and a stable key', async () => {
+    const { service, db, stripe } = setup();
+    db.user.findUnique.mockResolvedValue({
+      role: 'user',
+      email: 'person@example.com',
+    });
+    await expect(service.onboard('u', 'US')).resolves.toEqual({
+      url: 'https://connect.stripe.com/setup',
+    });
+    expect(stripe.v2.core.accounts.create).toHaveBeenCalledWith(
+      {
+        contact_email: 'person@example.com',
+        identity: { country: 'US' },
+        dashboard: 'express',
+        defaults: {
+          responsibilities: {
+            fees_collector: 'application',
+            losses_collector: 'application',
+          },
+        },
+        configuration: {
+          recipient: {
+            capabilities: {
+              stripe_balance: { stripe_transfers: { requested: true } },
+            },
+          },
+        },
+        metadata: { contributorRef: 'ca' },
+      },
+      { idempotencyKey: 'connect-v2:ca' },
+    );
+    expect(stripe.v2.core.accountLinks.create).toHaveBeenCalledWith({
+      account: 'acct',
+      use_case: {
+        type: 'account_onboarding',
+        account_onboarding: {
+          refresh_url: 'http://localhost:3000/dashboard/funds?connect=refresh',
+          return_url: 'http://localhost:3000/dashboard/funds?connect=return',
+        },
+      },
+    });
+  });
+  it('reuses an existing account without creating another', async () => {
+    const { service, db, stripe } = setup();
+    db.user.findUnique.mockResolvedValue({
+      role: 'user',
+      email: 'person@example.com',
+    });
+    db.contributorAccount.upsert.mockResolvedValue({
+      id: 'ca',
+      country: 'US',
+      createdAt: new Date(),
+      stripeAccountId: 'acct_existing',
+    });
+    await service.onboard('u', 'US');
+    expect(stripe.v2.core.accounts.create).not.toHaveBeenCalled();
+    expect(stripe.v2.core.accountLinks.create).toHaveBeenCalledWith(
+      expect.objectContaining({ account: 'acct_existing' }),
+    );
+  });
+  it('never rotates the key or saves an account after an uncertain failure', async () => {
+    const { service, db, stripe } = setup();
+    db.user.findUnique.mockResolvedValue({
+      role: 'user',
+      email: 'person@example.com',
+    });
+    stripe.v2.core.accounts.create.mockRejectedValue(new Error('timeout'));
+    await expect(service.onboard('u', 'US')).rejects.toThrow('timeout');
+    expect(stripe.v2.core.accounts.create).toHaveBeenCalledTimes(1);
+    expect(db.contributorAccount.update).not.toHaveBeenCalled();
+    expect(stripe.v2.core.accountLinks.create).not.toHaveBeenCalled();
+  });
+  it('blocks unsupported countries before calling Stripe', async () => {
+    const { service, db, stripe } = setup();
+    db.user.findUnique.mockResolvedValue({
+      role: 'user',
+      email: 'person@example.com',
+    });
+    await expect(service.onboard('u', 'CA')).rejects.toThrow(
+      'not been enabled',
+    );
+    expect(stripe.v2.core.accounts.create).not.toHaveBeenCalled();
   });
 });
