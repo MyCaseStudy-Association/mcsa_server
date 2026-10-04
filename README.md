@@ -48,3 +48,26 @@ Documented in [.env.example](.env.example) and the table in [CLAUDE.md](CLAUDE.m
 ## Privacy
 
 The proof store holds fingerprints, hashes, attestations, consent receipts and de-identified prompts only. Raw prompt content and matched entity text are never persisted, logged, or returned (CLAUDE.md rule 16). Detection runs in-zone: the mock detector or self-hosted Presidio, never a cloud API.
+
+## Shared accounts and buyer workspace
+
+The Expo app (`../mcsa`) and Next.js webapp (`../webapp`) use this same server and database.
+
+- Existing accounts migrate to `user`. Mobile registration remains contributor-only.
+- `POST /auth/login` and `/auth/refresh` accept optional `client: "mobile" | "web"`. Mobile rejects buyer/admin accounts. Auth responses and `/auth/me` include `user.role` (`user`, `buyer`, `admin`). Roles are signed into access tokens; there is no public role-change endpoint. Existing tokens without a role retain contributor-only permissions until re-login.
+- `POST /auth/register-buyer` creates a buyer and its owning account atomically. It accepts the normal name/email/password plus `legalName` and `categoryId`. Neither registration endpoint accepts a role or admin privileges.
+- Web accepts all roles. Buyers land on their briefs; admins land on moderation; contributors keep their overview and use mobile to import chats.
+- `GET/POST /buyer/briefs`: buyer-owned listing and validated draft creation. Admins can list all briefs; only buyers create. JSON uploads use the same validated create endpoint and cannot set ownership, escrow, pricing, or status.
+- `POST /buyer/briefs/:briefRef/moderate`: admin-only `status: "live" | "paused"`. Activating requires an unexpired, escrow-committed brief. Admins set the USD quote; the owning buyer pays through Stripe Checkout, and a verified webhook commits funding before admin activation. See STRIPE_SETUP.md.
+- `/briefs/push`, `/briefs/matches`, `/refinement/process`, `/valuation/estimate`, and consent revocation are contributor-only. The existing on-device import → de-identification → matching → selected submission → QA pipeline is preserved. `/packaging/batch` is restricted to admins; no buyer delivery entitlement flow is introduced.
+
+### Moderator seed
+
+Apply migrations with `npx prisma migrate deploy`, generate the client with `npm run prisma:generate`, then run `npx prisma db seed`.
+`SEED_ADMIN_EMAIL` defaults to `admin@portibilify.local`. Optional `SEED_ADMIN_PASSWORD` must contain 12–128 characters. When omitted, a random password is generated and saved to `.seed-admin.json` with mode 0600 (gitignored); it is never logged. Existing admin credentials are never reset, and a matching non-admin email is never promoted. The existing Phase-0 sandbox buyer/brief seed also runs idempotently. Use the web login for the moderator.
+
+Role checks: `src/auth/roles.spec.ts`; ownership and validation checks: `src/briefs/buyer-briefs.spec.ts`.
+
+## Stripe payments
+
+Buyer funding now uses Stripe Checkout and signed webhooks. Configure the server keys and webhook listener using [STRIPE_SETUP.md](STRIPE_SETUP.md). Missing Stripe configuration leaves checkout disabled while the rest of the server continues working.

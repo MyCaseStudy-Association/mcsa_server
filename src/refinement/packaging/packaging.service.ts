@@ -24,7 +24,10 @@ import {
   signReceipt,
   verifyReceiptSignature,
 } from './consent-receipt';
-import type { ConversationOutcome } from '../refinement.types';
+import type {
+  ConversationMeta,
+  ConversationOutcome,
+} from '../refinement.types';
 
 /** Buyer-facing record (App. F §F.3) — data-minimised, prompts-only. */
 export type BuyerRecord = {
@@ -128,6 +131,7 @@ export class PackagingService {
     conversation: ConversationOutcome,
     receiptRef: string,
     attestationChainTail: string | null,
+    meta: ConversationMeta | undefined,
     capturedAt?: number,
   ): Promise<string | null> {
     const kept = conversation.outcomes
@@ -138,6 +142,11 @@ export class PackagingService {
     const prompts = kept.map((outcome) => outcome.finalText as string);
     const turnIndexes = kept.map((outcome) => outcome.turnIndex);
     const recordRef = `rec_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    // Device labels (Builds #8.1/#8.2) — never re-derived server-side, so
+    // device match and QA agree on what the conversation is. Missing →
+    // undetermined, which fails QA closed.
+    const language = meta?.language ?? 'und';
+    const domainTags = meta?.domainTags ?? ['general'];
 
     // Chain extension (FR-5.3): hash the packaged metadata onto the tail of
     // the attestation chain. Metadata only — fingerprints, never text.
@@ -161,9 +170,9 @@ export class PackagingService {
         userId,
         internalConversationRef: conversation.conversationId,
         consentReceiptRef: receiptRef,
-        language: 'en',
+        language,
         capturedWindow: coarsenToQuarter(capturedAt),
-        domainTags: deriveDomainTags(prompts),
+        domainTags,
         prompts,
         turnIndexes,
         prevHash: attestationChainTail,
@@ -176,7 +185,8 @@ export class PackagingService {
         consentReceiptRef: receiptRef,
         prompts,
         turnIndexes,
-        domainTags: deriveDomainTags(prompts),
+        language,
+        domainTags,
         prevHash: attestationChainTail,
         chainHash,
         status: 'available',
@@ -340,26 +350,6 @@ export class PackagingService {
 function coarsenToQuarter(epochSeconds?: number): string {
   const date = epochSeconds ? new Date(epochSeconds * 1000) : new Date();
   return `${date.getUTCFullYear()}-Q${Math.floor(date.getUTCMonth() / 3) + 1}`;
-}
-
-/** Coarse topic tags — NOT sensitive categories (App. F §F.3). */
-function deriveDomainTags(prompts: string[]): string[] {
-  const text = prompts.join(' ').toLowerCase();
-  const tags: string[] = [];
-  if (
-    /\b(code|function|bug|typescript|python|javascript|sql|api|regex|compile|debug)\b/.test(
-      text,
-    )
-  ) {
-    tags.push('coding');
-  }
-  if (
-    /\b(write|essay|story|poem|draft|blog|article|email|letter)\b/.test(text)
-  ) {
-    tags.push('writing');
-  }
-  if (tags.length === 0) tags.push('general');
-  return tags;
 }
 
 function distribution(values: string[]): Record<string, number> {

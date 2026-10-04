@@ -8,6 +8,7 @@ import {
   isBuyerCategoryId,
 } from './taxonomy';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { QaService } from '../sale/qa.service';
 
 const future = new Date(Date.now() + 86_400_000);
 
@@ -81,14 +82,15 @@ describe('device push payload (INV-8 boundary)', () => {
 
 describe('BriefsService.goLive (D-16 gate)', () => {
   function serviceWith(escrowCommitted: boolean) {
-    const update = jest.fn().mockResolvedValue(undefined);
+    const update = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       brief: {
         findUnique: jest.fn().mockResolvedValue({ escrowCommitted }),
-        update,
+        updateMany: update,
       },
     } as unknown as PrismaService;
-    return { service: new BriefsService(prisma), update };
+    const qa = { runForConversation: jest.fn() } as unknown as QaService;
+    return { service: new BriefsService(prisma, qa), update };
   }
 
   it('refuses to go live without committed escrow', async () => {
@@ -103,7 +105,12 @@ describe('BriefsService.goLive (D-16 gate)', () => {
     const { service, update } = serviceWith(true);
     await service.goLive('brief_x');
     expect(update).toHaveBeenCalledWith({
-      where: { briefRef: 'brief_x' },
+      where: {
+        briefRef: 'brief_x',
+        escrowCommitted: true,
+        expiresAt: { gt: expect.any(Date) as Date },
+        status: { in: ['draft', 'paused', 'live'] },
+      },
       data: { status: 'live' },
     });
   });

@@ -1,3 +1,4 @@
+import { Roles } from '../auth/roles.decorator';
 import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -7,6 +8,7 @@ import { ProcessResponse, RefinementService } from './refinement.service';
 
 @ApiTags('refinement')
 @ApiBearerAuth()
+@Roles('user')
 @Controller('refinement')
 export class RefinementController {
   constructor(private readonly refinementService: RefinementService) {}

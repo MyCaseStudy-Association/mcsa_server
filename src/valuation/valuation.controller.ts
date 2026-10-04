@@ -1,3 +1,4 @@
+import { Roles } from '../auth/roles.decorator';
 import {
   Body,
   Controller,
@@ -21,6 +22,7 @@ import type { EstimateResponse } from './valuation.types';
 
 @ApiTags('valuation')
 @ApiBearerAuth()
+@Roles('user')
 @Controller('valuation')
 export class ValuationController {
   constructor(private readonly valuationService: ValuationService) {}

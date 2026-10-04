@@ -1,3 +1,4 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -80,6 +81,46 @@ export class ConsentContextDto {
   jurisdiction!: 'US' | 'CA';
 }
 
+/**
+ * Builds #8.1/#8.2: per-conversation metadata computed ON-DEVICE from the
+ * original text, once, and consumed everywhere downstream (packaged record,
+ * QA gate). Labels and versions only — never text.
+ */
+export class ConversationMetaDto {
+  @ApiProperty({ description: "Same id as the records' conversationId" })
+  @IsString()
+  @MaxLength(200)
+  conversationId!: string;
+
+  @ApiProperty({
+    description:
+      'Device domain tags (deterministic dictionary, >=1, "general" fallback)',
+    type: [String],
+  })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(20)
+  @Matches(/^[a-z][a-z0-9_]{0,39}$/, { each: true })
+  domainTags!: string[];
+
+  @ApiProperty({ description: 'Domain tagger version' })
+  @IsString()
+  @MaxLength(16)
+  domainTaggerVersion!: string;
+
+  @ApiProperty({
+    description: 'Device language verdict; only "en" is sellable in the MVP',
+    enum: ['en', 'other', 'und'],
+  })
+  @IsIn(['en', 'other', 'und'])
+  language!: 'en' | 'other' | 'und';
+
+  @ApiProperty({ description: 'Language gate version' })
+  @IsString()
+  @MaxLength(16)
+  languageGateVersion!: string;
+}
+
 export class ProcessRecordsDto {
   @IsString()
   @MaxLength(40)
@@ -100,4 +141,17 @@ export class ProcessRecordsDto {
   @ArrayMinSize(1)
   @ArrayMaxSize(500)
   records!: ProcessRecordDto[];
+
+  /**
+   * One entry per conversation in `records`. Optional for older clients:
+   * a conversation without one is packaged as language "und" and tags
+   * ["general"], which fails QA closed for any brief with a language.
+   */
+  @ApiPropertyOptional({ type: [ConversationMetaDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ConversationMetaDto)
+  @ArrayMaxSize(500)
+  conversations?: ConversationMetaDto[];
 }

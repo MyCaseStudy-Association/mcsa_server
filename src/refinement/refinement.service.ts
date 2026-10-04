@@ -19,9 +19,11 @@ import { chainHash } from './attestation/hash-chain';
 import { processConversation } from './policy/conversation';
 import { STAGE6_POLICY_VERSION } from './policy/thresholds';
 import { PackagingService } from './packaging/packaging.service';
+import { QaService } from '../sale/qa.service';
 import { ProcessRecordsDto } from './dto/process-records.dto';
 import { DETECTOR } from './refinement.types';
 import type {
+  ConversationMeta,
   ConversationOutcome,
   Detector,
   PipelineOutcome,
@@ -55,6 +57,7 @@ export class RefinementService {
     @Inject(DETECTOR) private readonly detector: Detector,
     private readonly prisma: PrismaService,
     private readonly packaging: PackagingService,
+    private readonly qa: QaService,
   ) {}
 
   async process(
@@ -84,6 +87,13 @@ export class RefinementService {
       if (group) group.push(input);
       else groups.set(record.conversationId, [input]);
     }
+
+    const metaByConversation = new Map<string, ConversationMeta>(
+      (dto.conversations ?? []).map((meta) => [
+        meta.conversationId,
+        { domainTags: meta.domainTags, language: meta.language },
+      ]),
+    );
 
     const conversations: ConversationOutcome[] = [];
     for (const records of groups.values()) {
@@ -130,6 +140,7 @@ export class RefinementService {
             conversation,
             receiptRef,
             chainTail,
+            metaByConversation.get(conversation.conversationId),
             groups.get(conversation.conversationId)?.[0]?.capturedAt,
           );
         }
@@ -140,6 +151,16 @@ export class RefinementService {
         this.logger.warn(
           `proof store unavailable — proofs/receipt/bundle not persisted (${(error as Error).name})`,
         );
+      }
+
+      if (recordRef) {
+        // Build #7: QA for any brief this conversation already matched.
+        // Non-fatal — the bundle is persisted; a match report re-runs QA.
+        try {
+          await this.qa.runForConversation(userId, conversation.conversationId);
+        } catch (error) {
+          this.logger.warn(`qa deferred (${(error as Error).name})`);
+        }
       }
 
       conversationSummaries.push({

@@ -65,6 +65,12 @@ export type RecordInput = {
   capturedAt?: number;
 };
 
+/** Device-computed conversation labels (Builds #8.1/#8.2). Never text. */
+export type ConversationMeta = {
+  domainTags: string[];
+  language: 'en' | 'other' | 'und';
+};
+
 /**
  * One ephemeral pseudonym map per CONVERSATION (E.1.4): "sarah jones" → 1.
  * Lives only inside processConversation's scope; destroyed after (INV-1).

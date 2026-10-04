@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PrismaModule } from '../prisma/prisma.module';
+import { SaleModule } from '../sale/sale.module';
 import { MockDetectorService } from './detector/mock-detector.service';
 import { PresidioDetectorService } from './detector/presidio-detector.service';
 import { PackagingController } from './packaging/packaging.controller';
@@ -18,7 +19,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
  * either way — the model is swappable, the policy is not.
  */
 @Module({
-  imports: [JwtModule.register({}), PrismaModule],
+  imports: [JwtModule.register({}), PrismaModule, SaleModule],
   controllers: [RefinementController, PackagingController],
   providers: [
     RefinementService,

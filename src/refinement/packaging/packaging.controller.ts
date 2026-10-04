@@ -1,3 +1,4 @@
+import { Roles } from '../../auth/roles.decorator';
 import {
   Controller,
   Get,
@@ -17,6 +18,7 @@ import { PackagingService } from './packaging.service';
 export class PackagingController {
   constructor(private readonly packagingService: PackagingService) {}
 
+  @Roles('admin')
   @Get('batch')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -38,6 +40,7 @@ export class PackagingController {
     return this.packagingService.verifyReceipt(receiptRef);
   }
 
+  @Roles('user')
   @Post('revoke/:receiptRef')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()

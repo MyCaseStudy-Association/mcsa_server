@@ -1,3 +1,4 @@
+import { Roles } from '../auth/roles.decorator';
 import {
   Body,
   Controller,
@@ -27,6 +28,7 @@ import { ReportMatchesDto } from './dto/report-matches.dto';
  */
 @ApiTags('briefs')
 @ApiBearerAuth()
+@Roles('user')
 @Controller('briefs')
 export class BriefsController {
   constructor(private readonly briefsService: BriefsService) {}

@@ -1,4 +1,9 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { RegisterBuyerDto } from './dto/register-buyer.dto';
+import {
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
@@ -44,6 +49,10 @@ export class AuthService {
     return this.issueTokens(user);
   }
 
+  async registerBuyer(dto: RegisterBuyerDto): Promise<AuthResponse> {
+    return this.issueTokens(await this.usersService.createBuyer(dto));
+  }
+
   async login(loginDto: LoginDto): Promise<AuthResponse> {
     const user = await this.usersService.findByEmailWithPassword(
       loginDto.email,
@@ -53,6 +62,11 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
+    if (loginDto.client === 'mobile' && user.role !== 'user') {
+      throw new ForbiddenException(
+        'Buyer and admin accounts must sign in on the website.',
+      );
+    }
     return this.issueTokens(user);
   }
 
@@ -68,6 +82,11 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
+    if (refreshTokenDto.client === 'mobile' && user.role !== 'user') {
+      throw new ForbiddenException(
+        'Buyer and admin accounts must sign in on the website.',
+      );
+    }
     await this.revokeRefreshToken(activeToken.id);
     return this.issueTokens(user);
   }
@@ -97,11 +116,13 @@ export class AuthService {
     const refreshTokenId = randomUUID();
     const accessPayload: TokenPayload = {
       sub: user.id,
+      role: user.role,
       email: user.email,
       type: 'access',
     };
     const refreshPayload: TokenPayload = {
       sub: user.id,
+      role: user.role,
       email: user.email,
       type: 'refresh',
       jti: refreshTokenId,
@@ -128,7 +149,14 @@ export class AuthService {
     });
 
     return {
-      user,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      },
       accessToken,
       refreshToken,
       tokenType: 'Bearer',

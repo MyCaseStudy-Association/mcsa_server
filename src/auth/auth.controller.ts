@@ -1,3 +1,4 @@
+import { RegisterBuyerDto } from './dto/register-buyer.dto';
 import {
   Body,
   Controller,
@@ -36,6 +37,14 @@ export class AuthController {
   @ApiResponse({ status: 201, description: 'Account created' })
   register(@Body() registerDto: RegisterDto): Promise<AuthResponse> {
     return this.authService.register(registerDto);
+  }
+
+  // public: buyer account creation, never accepts an admin role
+  @Post('register-buyer')
+  @ApiOperation({ summary: 'Create buyer account and linked buyer profile' })
+  @ApiResponse({ status: 201, description: 'Buyer account created' })
+  registerBuyer(@Body() dto: RegisterBuyerDto): Promise<AuthResponse> {
+    return this.authService.registerBuyer(dto);
   }
 
   // public: credential exchange

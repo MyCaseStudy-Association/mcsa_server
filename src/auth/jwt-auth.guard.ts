@@ -1,9 +1,11 @@
 import {
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
@@ -18,6 +20,7 @@ export class JwtAuthGuard implements CanActivate {
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly reflector: Reflector,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -40,10 +43,19 @@ export class JwtAuthGuard implements CanActivate {
       }
 
       request.user = payload;
-      return true;
     } catch {
       throw new UnauthorizedException('Invalid access token');
     }
+    const roles = this.reflector.getAllAndOverride<string[]>('roles', [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (roles && !roles.includes(request.user.role ?? 'user')) {
+      throw new ForbiddenException(
+        'This account does not have access to this feature.',
+      );
+    }
+    return true;
   }
 
   private extractBearerToken(request: Request): string | null {

@@ -1,3 +1,6 @@
+import type { Prisma } from '@prisma/client';
+import { CreateBriefDto } from './dto/create-brief.dto';
+import { PRICING_SCHEDULE_VERSION } from '../valuation/pricing-schedule';
 /**
  * Stage 8 — Build #5: briefs. The full brief is server-only (INV-8); the
  * device sees `toDevicePayload` and nothing else. Brief/buyer creation has
@@ -6,11 +9,14 @@
  */
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { QaService } from '../sale/qa.service';
 import type {
   BriefQuality,
   BriefSpec,
@@ -45,7 +51,91 @@ const ref = (prefix: string) =>
 
 @Injectable()
 export class BriefsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(BriefsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly qa: QaService,
+  ) {}
+
+  async listForAccount(userId: string): Promise<
+    Prisma.BriefGetPayload<{
+      include: {
+        buyer: { select: { legalName: true; categoryId: true } };
+        _count: { select: { matches: true } };
+        payment: {
+          select: { status: true; amountCents: true; currency: true };
+        };
+      };
+    }>[]
+  > {
+    const account = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+    if (!account || !['buyer', 'admin'].includes(account.role))
+      throw new ForbiddenException();
+    return this.prisma.brief.findMany({
+      where: account.role === 'admin' ? {} : { buyer: { userId } },
+      include: {
+        buyer: { select: { legalName: true, categoryId: true } },
+        _count: { select: { matches: true } },
+        payment: {
+          select: { status: true, amountCents: true, currency: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+  }
+
+  async createForAccount(
+    userId: string,
+    dto: CreateBriefDto,
+  ): Promise<{ briefRef: string }> {
+    const buyer = await this.prisma.buyer.findUnique({
+      where: { userId },
+      include: { user: true },
+    });
+    if (!buyer || buyer.user?.role !== 'buyer')
+      throw new ForbiddenException('Buyer account required.');
+    if (new Date(dto.expiresAt) <= new Date())
+      throw new BadRequestException('Expiry must be in the future.');
+    if (!dto.spec.domains.length || !dto.spec.languages.length)
+      throw new BadRequestException('Choose at least one domain and language.');
+    return this.createBrief({
+      buyerRef: buyer.buyerRef,
+      spec: { ...dto.spec },
+      quality: { ...dto.quality },
+      volume: {
+        ...dto.volume,
+        maxPerContributor: dto.volume.maxPerContributor ?? null,
+      },
+      pricingScheduleVersion: PRICING_SCHEDULE_VERSION,
+      expiresAt: new Date(dto.expiresAt),
+    });
+  }
+
+  async moderateForAccount(
+    userId: string,
+    briefRef: string,
+    status: 'live' | 'paused',
+  ): Promise<{ briefRef: string; status: string }> {
+    const account = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+    if (account?.role !== 'admin') throw new ForbiddenException();
+    const brief = await this.prisma.brief.findUnique({ where: { briefRef } });
+    if (!brief) throw new NotFoundException('Brief not found.');
+    if (['filled', 'expired'].includes(brief.status))
+      throw new BadRequestException('This brief is closed.');
+    if (status === 'live') {
+      if (brief.expiresAt <= new Date())
+        throw new BadRequestException('Brief has expired.');
+      await this.goLive(briefRef);
+    } else
+      await this.prisma.brief.update({ where: { briefRef }, data: { status } });
+    return { briefRef, status };
+  }
 
   // -------------------------------------------------------------------------
   // Device-facing (JwtAuthGuard in the controller)
@@ -75,7 +165,9 @@ export class BriefsService {
   /**
    * Records match metadata reported by the device (upsert per brief +
    * contributor + conversation). Only briefs the device could legitimately
-   * hold (live + committed) accept reports.
+   * hold (live + committed) accept reports. Each reported conversation then
+   * goes through the QA gate (Build #7) if it is already packaged. QA
+   * results never go back to the device (§7.5: nothing is "rejected").
    */
   async reportMatches(
     userId: string,
@@ -83,9 +175,19 @@ export class BriefsService {
   ): Promise<{ briefRef: string; recorded: number }> {
     const brief = await this.prisma.brief.findUnique({
       where: { briefRef: dto.briefRef },
-      select: { id: true, status: true, escrowCommitted: true },
+      select: {
+        id: true,
+        status: true,
+        escrowCommitted: true,
+        expiresAt: true,
+      },
     });
-    if (!brief || brief.status !== 'live' || !brief.escrowCommitted) {
+    if (
+      !brief ||
+      brief.status !== 'live' ||
+      !brief.escrowCommitted ||
+      brief.expiresAt <= new Date()
+    ) {
       throw new NotFoundException('Brief not found.');
     }
 
@@ -113,6 +215,15 @@ export class BriefsService {
         }),
       ),
     );
+
+    for (const conversation of dto.conversations) {
+      try {
+        await this.qa.runForConversation(userId, conversation.conversationId);
+      } catch (error) {
+        // The match is recorded; QA re-runs on the next Stage 6 pass.
+        this.logger.warn(`qa deferred (${(error as Error).name})`);
+      }
+    }
     return { briefRef: dto.briefRef, recorded: dto.conversations.length };
   }
 
@@ -177,9 +288,16 @@ export class BriefsService {
         'Brief cannot go live: escrow not committed (D-16).',
       );
     }
-    await this.prisma.brief.update({
-      where: { briefRef },
+    const updated = await this.prisma.brief.updateMany({
+      where: {
+        briefRef,
+        escrowCommitted: true,
+        expiresAt: { gt: new Date() },
+        status: { in: ['draft', 'paused', 'live'] },
+      },
       data: { status: 'live' },
     });
+    if (!updated.count)
+      throw new BadRequestException('Brief is no longer funded or has closed.');
   }
 }

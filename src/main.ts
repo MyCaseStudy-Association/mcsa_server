@@ -1,7 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { createServer } from 'node:http';
+import { createServer, type RequestListener } from 'node:http';
 import { AppModule } from './app.module';
 
 const DEFAULT_CORS_ORIGINS = [
@@ -38,11 +38,14 @@ function isLocalhostOrigin(origin: string) {
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   const allowedCorsOrigins = getAllowedCorsOrigins();
 
   app.enableCors({
-    origin: (origin, callback) => {
+    origin: (
+      origin: string | undefined,
+      callback: (error: Error | null, allow?: boolean) => void,
+    ) => {
       if (
         !origin ||
         allowedCorsOrigins.has(origin) ||
@@ -81,7 +84,7 @@ async function bootstrap() {
   await app.listen(port);
 
   if (browserSafePort !== port) {
-    const expressApp = app.getHttpAdapter().getInstance();
+    const expressApp = app.getHttpAdapter().getInstance() as RequestListener;
     createServer(expressApp).listen(browserSafePort);
   }
 }

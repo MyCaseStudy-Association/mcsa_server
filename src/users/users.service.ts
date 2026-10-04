@@ -1,5 +1,8 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
+import { RegisterBuyerDto } from '../auth/dto/register-buyer.dto';
+import { BUYER_CATEGORY_TAXONOMY_VERSION } from '../briefs/taxonomy';
 import { hash } from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { User, UserWithPassword } from './user.entity';
@@ -38,6 +41,32 @@ export class UsersService {
     }
   }
 
+  async createBuyer(input: RegisterBuyerDto): Promise<User> {
+    try {
+      const user = await this.prismaService.user.create({
+        data: {
+          email: input.email.trim().toLowerCase(),
+          name: input.name?.trim() || null,
+          passwordHash: await hash(input.password, 12),
+          role: 'buyer',
+          buyer: {
+            create: {
+              buyerRef: `buyer_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+              legalName: input.legalName.trim(),
+              categoryId: input.categoryId,
+              categoryTaxonomyVersion: BUYER_CATEGORY_TAXONOMY_VERSION,
+            },
+          },
+        },
+      });
+      return this.toUser(user);
+    } catch (error) {
+      if (this.isUniqueViolation(error))
+        throw new ConflictException('Email is already registered');
+      throw error;
+    }
+  }
+
   async findByEmailWithPassword(
     email: string,
   ): Promise<UserWithPassword | null> {
@@ -59,6 +88,7 @@ export class UsersService {
   private toUser(user: Prisma.UserGetPayload<object>): User {
     return {
       id: user.id,
+      role: user.role,
       name: user.name,
       email: user.email,
       createdAt: user.createdAt,

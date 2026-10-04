@@ -1,5 +1,6 @@
 export interface User {
   id: string;
+  role: 'user' | 'buyer' | 'admin';
   name: string | null;
   email: string;
   createdAt: Date;

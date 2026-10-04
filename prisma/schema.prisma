@@ -6,11 +6,19 @@ datasource db {
   provider = "postgresql"
 }
 
+enum UserRole {
+  user
+  buyer
+  admin
+}
+
 model User {
   id            String         @id @default(uuid()) @db.Uuid
   name          String?        @db.VarChar(120)
   email         String         @unique @db.VarChar(254)
   passwordHash  String         @map("password_hash")
+  role          UserRole       @default(user)
+  buyer         Buyer?
   refreshTokens RefreshToken[]
   createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -122,6 +130,8 @@ model RefreshToken {
 // ---------------------------------------------------------------------------
 
 model Buyer {
+  userId                  String?  @unique @map("user_id") @db.Uuid
+  user                    User?    @relation(fields: [userId], references: [id])
   id                      String   @id @default(uuid()) @db.Uuid
   buyerRef                String   @unique @map("buyer_ref") @db.VarChar(64)
   legalName               String   @map("legal_name") @db.VarChar(200) // internal only — never to the device (INV-6)
@@ -135,6 +145,8 @@ model Buyer {
 }
 
 model Brief {
+  fundingAmountCents     Int?         @map("funding_amount_cents")
+  payment                BriefPayment?
   id                     String       @id @default(uuid()) @db.Uuid
   briefRef               String       @unique @map("brief_ref") @db.VarChar(64)
   buyerId                String       @map("buyer_id") @db.Uuid
@@ -161,17 +173,78 @@ model Brief {
 // fingerprints. Match METADATA only — never spec-evaluation details, never
 // content. Feeds Build #7's QA candidate queue.
 model BriefMatch {
-  id                      String   @id @default(uuid()) @db.Uuid
-  briefId                 String   @map("brief_id") @db.Uuid
-  brief                   Brief    @relation(fields: [briefId], references: [id])
-  userId                  String   @map("user_id") @db.Uuid
-  internalConversationRef String   @map("internal_conversation_ref") @db.VarChar(200)
-  promptCount             Int      @map("prompt_count")
+  id                      String    @id @default(uuid()) @db.Uuid
+  briefId                 String    @map("brief_id") @db.Uuid
+  brief                   Brief     @relation(fields: [briefId], references: [id])
+  userId                  String    @map("user_id") @db.Uuid
+  internalConversationRef String    @map("internal_conversation_ref") @db.VarChar(200)
+  promptCount             Int       @map("prompt_count")
   fingerprints            Json // exact SHA-256 hashes of the matched prompts, in turn order
-  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt               DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  qaResult                QaResult?
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@unique([briefId, userId, internalConversationRef])
   @@index([userId])
   @@map("brief_matches")
+}
+
+// ---------------------------------------------------------------------------
+// Stage 8 — Build #7: QA gate result (§7.1.1, FR-3.4 pre-commitment gate).
+//
+// ONE row per BriefMatch, re-evaluated whenever the conversation is
+// re-processed or re-reported, until it is sold. METADATA ONLY: failure
+// codes, numbers and versions — never prompt text or the keyword that
+// failed (INV-1). A `passed` row carries the precise valuation (Build #6
+// §6.3), computed once at QA time on the final de-identified text; these
+// rows are the candidates fulfilment selection (§7.2) ranks.
+// ---------------------------------------------------------------------------
+
+model QaResult {
+  id                      String     @id @default(uuid()) @db.Uuid
+  briefMatchId            String     @unique @map("brief_match_id") @db.Uuid
+  briefMatch              BriefMatch @relation(fields: [briefMatchId], references: [id], onDelete: Cascade)
+  briefId                 String     @map("brief_id") @db.Uuid
+  userId                  String     @map("user_id") @db.Uuid
+  internalConversationRef String     @map("internal_conversation_ref") @db.VarChar(200)
+  packagedRecordRef       String?    @map("packaged_record_ref") @db.VarChar(64)
+  status                  String     @db.VarChar(16) // passed | failed
+  failures                Json // QaFailureCode[] — codes only
+  language                String     @db.VarChar(16)
+  redactionDensity        Float      @map("redaction_density")
+  dedupStatus             String     @map("dedup_status") @db.VarChar(24) // new | exact_duplicate | near_duplicate
+  tierCounts              Json?      @map("tier_counts") // passed only
+  amountCents             Int?       @map("amount_cents") // passed only — NET integer cents (D-33)
+  pricingScheduleVersion  String?    @map("pricing_schedule_version") @db.VarChar(16)
+  qaVersion               String     @map("qa_version") @db.VarChar(16)
+  dedupVersion            String     @map("dedup_version") @db.VarChar(16)
+  passedAt                DateTime?  @map("passed_at") @db.Timestamptz(6)
+  createdAt               DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([briefId, status])
+  @@index([userId])
+  @@map("qa_results")
+}
+
+// Stripe funding ledger. No card details or webhook payloads are stored.
+model BriefPayment {
+  id String @id @default(uuid()) @db.Uuid
+  briefId String @unique @map("brief_id") @db.Uuid
+  brief Brief @relation(fields: [briefId], references: [id])
+  amountCents Int @map("amount_cents")
+  currency String @default("usd") @db.VarChar(3)
+  status String @default("pending") @db.VarChar(24)
+  attempt Int @default(1)
+  sessionId String? @unique @map("session_id")
+  paymentIntentId String? @unique @map("payment_intent_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  @@map("brief_payments")
+}
+model StripeEvent {
+  id String @id
+  type String @db.VarChar(120)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@map("stripe_events")
 }

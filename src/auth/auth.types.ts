@@ -2,6 +2,7 @@ import { User } from '../users/user.entity';
 
 export interface TokenPayload {
   sub: string;
+  role?: 'user' | 'buyer' | 'admin';
   email: string;
   type: 'access' | 'refresh';
   jti?: string;

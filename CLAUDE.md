@@ -1,6 +1,6 @@
 # Portibilify API server (`mcsa_server/`)
 
-NestJS 11 + Prisma 7 (Postgres via `@prisma/adapter-pg`) + JWT auth + Swagger. Stages 6–7 of the pipeline (server-side de-identification, packaging, consent receipts). The only client is the Expo app in the sibling repository `mcsa/` (separate git repo, own `CLAUDE.md`). Never import from it, never move code between the two, never commit from a parent folder.
+NestJS 11 + Prisma 7 (Postgres via `@prisma/adapter-pg`) + JWT auth + Swagger. Stages 6–7 of the pipeline (server-side de-identification, packaging, consent receipts). Clients are the Next.js webapp (`../webapp`) and the Expo app in the sibling repository `mcsa/` (separate git repo, own `CLAUDE.md`). Never import from it, never move code between the two, never commit from a parent folder.
 
 ## Commands
 
@@ -27,6 +27,7 @@ Swagger UI: `http://localhost:6000/api`. Keep it accurate; the app is written ag
 - Swagger at `/api` is the contract. Every handler must be fully decorated so the app can be written against it.
 - Public endpoints (no Bearer): `POST /auth/register|login|refresh|logout`, `GET /packaging/verify/:receiptRef`. Everything else requires `JwtAuthGuard`.
 - Briefs (Stage 8, INV-8): `GET /briefs/push` returns the minimal on-device matching payload; `POST /briefs/matches` receives match metadata. There is deliberately no list/search/detail endpoint and no contributor-facing create endpoint — briefs are created by `prisma/seed.ts` (Phase 0) or the admin console (later).
+- QA (Stage 8 Build #7): no endpoint. `QaService` runs after Stage 6 packaging and after `POST /briefs/matches`, writing one `QaResult` per `BriefMatch` (codes + numbers, never text; a pass carries the precise valuation). Results never go back to the device. `POST /refinement/process` accepts optional `conversations: [{ conversationId, domainTags, domainTaggerVersion, language: en|other|und, languageGateVersion }]`; these device labels are stored on the packaged record and are never re-derived server-side (missing → `und`/`general`, fails QA closed).
 - Valuation (Stage 8 Build #6): `POST /valuation/estimate` takes `{ conversations: [{ short, medium, long }] }` (tier counts of selected, brief-matched, Stage-4-kept prompts; no ids, no text) and returns `{ lowCents, highCents, currency, scheduleVersion }`. All money is integer cents; the app formats `$X.XX`.
 - Any endpoint added, renamed, or reshaped here must get a matching client change in `mcsa/src/features/<feature>/services/*-api.ts`. List those files in the commit body.
 - If a task needs both a server change and an app change, do the server first and keep each commit independently buildable.
@@ -71,6 +72,12 @@ mcsa_server/
       estimate.ts            Range from per-conversation tier counts. Pure.
       precise-valuation.ts   The one binding valuation (after QA). Pure.
       dto/                   Request DTO + Swagger response schema.
+    sale/                    Stage 8 Build #7: sale pipeline. Today the QA gate only; no controller (driven by refinement + briefs).
+      sale.{module,types}.ts
+      qa.service.ts          Loads packaged bundle + receipt + fingerprints per brief match, runs the gate, upserts QaResult.
+      qa-gate.ts             The QA gate. Pure. Failure codes only.
+      dedup.ts               Cross-contributor exact/near (SimHash) duplicate check on fingerprints. Pure. Provisional thresholds.
+      keyword-match.ts       Shared keyword semantics. Pure. Mirrored in the app; both run the same vectors.
     refinement/              Stage 6/7 pipeline. Sub-areas:
       refinement.{module,controller,service,types}.ts
       dto/                   Request DTOs.
@@ -208,3 +215,17 @@ Adding a variable: read it via `ConfigService`, document it in this table, and a
 **New endpoint on an existing domain:** DTO first, then service method with explicit return type, then controller handler with guard + Swagger. Update the public-endpoint list in rule 12 if it is public.
 
 **New Prisma model:** add to `schema.prisma` with `@@map` / `@map`, uuid id, timestamptz timestamps, index on `userId`. Confirm it stores no raw content (rule 16). `prisma:generate`, migrate, then use via `PrismaService`.
+
+## Shared-role extension (October 2026)
+
+The requested buyer web console supersedes the Phase-0-only creation restriction above. Full briefs may be listed by their owning buyer and by admins; contributors still receive only the minimal push payload. `buyer-briefs.controller.ts` owns `/buyer/briefs` and admin moderation. Validated inputs are `create-brief.dto.ts` and `moderate-brief.dto.ts`. `auth/roles.decorator.ts` is enforced by `JwtAuthGuard`; signed roles default to user for legacy tokens. Privileged brief services additionally read current database roles and scope ownership by authenticated `sub`.
+
+Public auth now includes `POST /auth/register-buyer`. `register-buyer.dto.ts` does not accept a role. Users are `user | buyer | admin`; only the trusted seed creates admins. Buyer accounts link one-to-one to Buyer via `userId`. Mobile auth explicitly sends `client: mobile` and checks contributor roles before saving/restoring sessions.
+
+Seed configuration: `SEED_ADMIN_EMAIL` (optional, default admin@portibilify.local); `SEED_ADMIN_PASSWORD` (optional, 12–128 chars). An omitted password is generated into private gitignored `.seed-admin.json`. Never print or commit this file. Payment commitment remains a trusted server operation, not a buyer/moderator body field.
+
+## Stripe funding extension
+
+`payments/` owns buyer funding: `payments.module.ts`, `payments.controller.ts`, `payments.service.ts`, `payments.service.spec.ts`, `dto/quote-brief.dto.ts`. Registered in AppModule. ConfigService-only variables: optional `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `WEB_APP_URL` (required to enable checkout). See STRIPE_SETUP.md. `main.ts` enables Nest rawBody for signature verification. Public `POST /payments/stripe/webhook` is authenticated with the Stripe raw-body signature, never JWT. Other payment endpoints require JwtAuthGuard plus role checks, with ownership rechecked in the service.
+
+Admin quotes are total USD integer cents, frozen once checkout starts. Signed verified payments set funding eligibility but never activate. Refund/dispute events remove eligibility and pause. `BriefPayment` is unique per brief; `StripeEvent` stores processed ids, not payloads. Contributor/mobile endpoints and payloads remain unchanged; web clients live in `webapp/app/dashboard/briefs/payment-actions.ts` and payment-controls.tsx.
