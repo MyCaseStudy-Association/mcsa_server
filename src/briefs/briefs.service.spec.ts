@@ -115,3 +115,46 @@ describe('BriefsService.goLive (D-16 gate)', () => {
     });
   });
 });
+
+describe('verified payment matching gate', () => {
+  it.each([
+    null,
+    { status: 'pending', paymentIntentId: 'pi' },
+    { status: 'paid', paymentIntentId: null },
+    { status: 'refunded', paymentIntentId: 'pi' },
+  ])('rejects unpaid or unverified cached matches', async (payment) => {
+    const upsert = jest.fn();
+    const prisma = {
+      brief: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'b',
+          status: 'live',
+          escrowCommitted: true,
+          expiresAt: future,
+          payment,
+        }),
+      },
+      briefMatch: { upsert },
+    } as unknown as PrismaService;
+    const service = new BriefsService(prisma, {} as QaService);
+    await expect(
+      service.reportMatches('u', { briefRef: 'brief_test', conversations: [] }),
+    ).rejects.toThrow('Brief not found');
+    expect(upsert).not.toHaveBeenCalled();
+  });
+  it('only queries paid briefs with a Stripe payment reference for matching', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const service = new BriefsService(
+      { brief: { findMany } } as unknown as PrismaService,
+      {} as QaService,
+    );
+    await service.pushPayload();
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          payment: { is: { status: 'paid', paymentIntentId: { not: null } } },
+        }) as unknown,
+      }),
+    );
+  });
+});

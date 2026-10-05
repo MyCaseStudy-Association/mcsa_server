@@ -53,3 +53,15 @@ References:
 New accounts use a stable `connect-v2:<contributor-reference>` idempotency key. Existing stored Stripe account IDs are reused. The previous v1 policy-rejection retry is removed. The reported legacy requests were definitively rejected; any other legacy creation with an uncertain outcome must be reconciled in Stripe before retrying with v2. Never delete account references to retry onboarding. The 23-hour recovery guard remains in place.
 
 References: https://docs.stripe.com/connect/accounts-v2
+
+## Submission acceptance and payment approval
+
+The web ZIP import automatically prepares eligible conversations for submission. Existing privacy, consent, quality and funded-brief matching checks still apply. Admin acceptance uses the reserve endpoint: it rechecks QA, consent, available funding and collection limits before reserving earnings. The release endpoint is a separate admin-only payment approval. Contributor dashboards include a persisted count of passing, positively valued QA matches without an allocation; this counts contribution matches, not ZIP files. No raw ZIP is stored.
+
+Contributor history: GET /settlement/submissions?page=1 returns 50 owned conversation records per page with current QA/allocation status and allocated amount. No prompts, buyer identities or ZIP files are returned. The web page is /dashboard/my-submissions; mobile contracts are unchanged.
+
+Submission synchronization: admin queue excludes allocated QA results before applying its limit. Web review, history and funds pages refresh from the server every 15 seconds while visible and on tab focus. Admin mutations invalidate contributor history as well as the admin queue and funds pages.
+
+Matching requires a live, unexpired brief with committed funding, a paid BriefPayment and a Stripe payment intent reference. Both /briefs/push and /briefs/matches enforce this for web and mobile. Seed flags alone do not enable matching; historical matches are retained but remain blocked from settlement.
+
+Interactive database transactions use a bounded 30-second execution timeout and 10-second connection acquisition wait through PrismaService for remote database latency. Isolation and Stripe idempotency protections remain unchanged; timeouts do not automatically retry payments.

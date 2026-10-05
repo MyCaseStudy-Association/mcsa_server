@@ -144,7 +144,12 @@ export class BriefsService {
   /** The minimal matching payload for every live, escrow-committed brief. */
   async pushPayload(now: Date = new Date()): Promise<DevicePushPayload> {
     const rows = await this.prisma.brief.findMany({
-      where: { status: 'live', escrowCommitted: true, expiresAt: { gt: now } },
+      where: {
+        status: 'live',
+        escrowCommitted: true,
+        expiresAt: { gt: now },
+        payment: { is: { status: 'paid', paymentIntentId: { not: null } } },
+      },
       include: { buyer: { select: { categoryId: true } } },
       orderBy: { createdAt: 'asc' },
     });
@@ -180,12 +185,15 @@ export class BriefsService {
         status: true,
         escrowCommitted: true,
         expiresAt: true,
+        payment: { select: { status: true, paymentIntentId: true } },
       },
     });
     if (
       !brief ||
       brief.status !== 'live' ||
       !brief.escrowCommitted ||
+      brief.payment?.status !== 'paid' ||
+      !brief.payment.paymentIntentId ||
       brief.expiresAt <= new Date()
     ) {
       throw new NotFoundException('Brief not found.');

@@ -10,6 +10,7 @@ import { Prisma } from '@prisma/client';
 import Stripe from 'stripe';
 import { PrismaService } from '../prisma/prisma.service';
 import { fundBalances } from './fund-balances';
+import { submissionReadiness } from './submission-readiness';
 
 @Injectable()
 export class SettlementService {
@@ -204,6 +205,91 @@ export class SettlementService {
       payoutsEnabled: account.payouts_enabled,
     };
   }
+  async submissions(userId: string, page: number) {
+    await this.role(userId, 'user');
+    if (!Number.isSafeInteger(page) || page < 1 || page > 10000)
+      throw new BadRequestException('Invalid page.');
+    const records = await this.prisma.packagedRecord.findMany({
+      where: { userId },
+      select: {
+        recordRef: true,
+        status: true,
+        createdAt: true,
+        chainHash: true,
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      skip: (page - 1) * 50,
+      take: 51,
+    });
+    const visible = records.slice(0, 50);
+    const refs = visible.map((r) => r.recordRef);
+    const checks = await this.prisma.qaResult.findMany({
+      where: { userId, packagedRecordRef: { in: refs } },
+      select: {
+        packagedRecordRef: true,
+        packagedChainHash: true,
+        status: true,
+        amountCents: true,
+        allocation: { select: { id: true } },
+        briefMatch: {
+          select: {
+            brief: {
+              select: {
+                status: true,
+                expiresAt: true,
+                escrowCommitted: true,
+                payment: { select: { status: true, paymentIntentId: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+    const allocations = await this.prisma.fundAllocation.findMany({
+      where: { userId, recordRef: { in: refs } },
+      select: { recordRef: true, status: true, amountCents: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    return {
+      page,
+      hasMore: records.length > 50,
+      submissions: visible.map((record) => {
+        const own = allocations.filter((a) => a.recordRef === record.recordRef);
+        const allocation = own.find((a) => a.status !== 'cancelled') ?? own[0];
+        const qa = checks.filter(
+          (q) =>
+            q.packagedRecordRef === record.recordRef &&
+            q.packagedChainHash === record.chainHash,
+        );
+        const status =
+          record.status === 'revoked'
+            ? 'withdrawn'
+            : allocation
+              ? allocation.status
+              : qa.some((q) => q.status === 'passed')
+                ? qa.some(
+                    (q) =>
+                      q.status === 'passed' &&
+                      !q.allocation &&
+                      submissionReadiness(
+                        q.amountCents,
+                        q.briefMatch?.brief,
+                      ) === null,
+                  )
+                  ? 'awaiting_acceptance'
+                  : 'awaiting_eligible_brief'
+                : qa.length
+                  ? 'quality_not_passed'
+                  : 'awaiting_matching';
+        return {
+          reference: record.recordRef,
+          submittedAt: record.createdAt,
+          status,
+          amountCents: allocation?.amountCents ?? null,
+        };
+      }),
+    };
+  }
   async dashboard(userId: string) {
     const user = await this.role(userId);
     const countries = (
@@ -241,6 +327,14 @@ export class SettlementService {
         enabled: this.enabled(),
         countries,
         connect,
+        pendingReviewCount: await this.prisma.qaResult.count({
+          where: {
+            userId,
+            status: 'passed',
+            amountCents: { gt: 0 },
+            allocation: null,
+          },
+        }),
         allocations,
         totals: totals.map((t) => ({
           status: t.status,
@@ -324,26 +418,58 @@ export class SettlementService {
         ? await this.prisma.qaResult.findMany({
             where: {
               status: 'passed',
+              allocation: null,
               amountCents: { gt: 0 },
-              briefId: {
-                in: payments
-                  .filter(
-                    (p) =>
-                      p.status === 'paid' &&
-                      p.brief.status === 'live' &&
-                      p.brief.expiresAt > new Date(),
-                  )
-                  .map((p) => p.briefId),
+            },
+            select: {
+              id: true,
+              briefId: true,
+              userId: true,
+              amountCents: true,
+              packagedRecordRef: true,
+              briefMatch: {
+                select: {
+                  brief: {
+                    select: {
+                      briefRef: true,
+                      spec: true,
+                      buyer: { select: { legalName: true } },
+                      status: true,
+                      expiresAt: true,
+                      escrowCommitted: true,
+                      payment: {
+                        select: { status: true, paymentIntentId: true },
+                      },
+                    },
+                  },
+                },
               },
             },
-            select: { id: true, briefId: true, amountCents: true },
             take: 100,
             orderBy: { createdAt: 'asc' },
           })
         : [];
+    const contributors =
+      user.role === 'admin'
+        ? await this.prisma.user.findMany({
+            where: { id: { in: candidates.map((q) => q.userId) } },
+            select: { id: true, name: true },
+          })
+        : [];
     const existing = await this.prisma.fundAllocation.findMany({
-      where: { qaId: { in: candidates.map((q) => q.id) } },
-      select: { qaId: true },
+      where: {
+        OR: [
+          { qaId: { in: candidates.map((q) => q.id) } },
+          {
+            activeRecordRef: {
+              in: candidates.flatMap((q) =>
+                q.packagedRecordRef ? [q.packagedRecordRef] : [],
+              ),
+            },
+          },
+        ],
+      },
+      select: { qaId: true, activeRecordRef: true },
     });
     return {
       role: user.role,
@@ -354,131 +480,167 @@ export class SettlementService {
       totals: [],
       funds,
       candidates: candidates
-        .filter((q) => !existing.some((a) => a.qaId === q.id))
+        .filter(
+          (q) =>
+            !existing.some(
+              (a) =>
+                a.qaId === q.id ||
+                (a.activeRecordRef &&
+                  a.activeRecordRef === q.packagedRecordRef),
+            ),
+        )
         .map((q) => ({
           id: q.id,
           amountCents: q.amountCents,
-          briefRef: payments.find((p) => p.briefId === q.briefId)?.brief
-            .briefRef,
+          contributorName:
+            contributors.find((u) => u.id === q.userId)?.name ||
+            'Unnamed contributor',
+          briefName:
+            q.briefMatch.brief.buyer.legalName +
+            ' — ' +
+            (
+              (q.briefMatch.brief.spec as { domains?: string[] }).domains ?? []
+            ).join(', '),
+          recordRef: q.packagedRecordRef,
+          briefRef: q.briefMatch.brief.briefRef,
+          blockedReason: submissionReadiness(q.amountCents, q.briefMatch.brief),
         })),
     };
   }
   async reserve(userId: string, qaId: string): Promise<{ id: string }> {
     await this.role(userId, 'admin');
-    return this.prisma.$transaction(
-      async (tx) => {
-        const qa = await tx.qaResult.findUnique({ where: { id: qaId } });
+    return this.prisma
+      .$transaction(
+        async (tx) => {
+          const qa = await tx.qaResult.findUnique({ where: { id: qaId } });
+          if (
+            !qa ||
+            qa.status !== 'passed' ||
+            !qa.packagedRecordRef ||
+            !qa.amountCents ||
+            qa.amountCents < 1
+          )
+            throw new ConflictException(
+              'A current QA pass with a positive valuation is required.',
+            );
+          const source = await tx.briefPayment.findUnique({
+            where: { briefId: qa.briefId },
+          });
+          if (!source)
+            throw new ConflictException(
+              'No Stripe funding exists for this brief.',
+            );
+          const payment = await this.lock(tx, source.id);
+          if (
+            payment.status !== 'paid' ||
+            !payment.paymentIntentId ||
+            !payment.brief.escrowCommitted ||
+            payment.brief.status !== 'live' ||
+            payment.brief.expiresAt <= new Date()
+          )
+            throw new ConflictException(
+              'Brief must be live, funded and unexpired.',
+            );
+          const existing = await tx.fundAllocation.findUnique({
+            where: { qaId },
+          });
+          if (existing) return { id: existing.id };
+          const active = await tx.fundAllocation.findUnique({
+            where: { activeRecordRef: qa.packagedRecordRef },
+          });
+          if (active)
+            throw new ConflictException(
+              'This conversation already has earnings allocated to another brief. Refresh Submissions and manage the existing allocation in Funds.',
+            );
+          const record = await tx.packagedRecord.findUnique({
+            where: { recordRef: qa.packagedRecordRef },
+          });
+          const receipt =
+            record &&
+            (await tx.consentReceipt.findUnique({
+              where: { receiptRef: record.consentReceiptRef },
+            }));
+          if (
+            !record ||
+            record.userId !== qa.userId ||
+            record.status !== 'available' ||
+            qa.packagedChainHash !== record.chainHash ||
+            !receipt ||
+            receipt.revokedAt
+          )
+            throw new ConflictException(
+              'Contribution is unavailable or consent has been withdrawn.',
+            );
+          const volume = payment.brief.volume as {
+            targetConversations: number;
+            maxPerContributor?: number | null;
+          };
+          const count = await tx.fundAllocation.count({
+            where: {
+              paymentId: payment.id,
+              status: { notIn: ['cancelled', 'reversed'] },
+            },
+          });
+          const ownCount = await tx.fundAllocation.count({
+            where: {
+              paymentId: payment.id,
+              userId: qa.userId,
+              status: { notIn: ['cancelled', 'reversed'] },
+            },
+          });
+          if (
+            count >= volume.targetConversations ||
+            (volume.maxPerContributor && ownCount >= volume.maxPerContributor)
+          )
+            throw new ConflictException('Brief collection limit reached.');
+          const balances = await this.balances(
+            tx,
+            payment.id,
+            payment.amountCents,
+          );
+          if (balances.availableCents < qa.amountCents)
+            throw new ConflictException('Insufficient unallocated funding.');
+          const allocation = await tx.fundAllocation.create({
+            data: {
+              paymentId: payment.id,
+              qaId: qa.id,
+              userId: qa.userId,
+              recordRef: record.recordRef,
+              activeRecordRef: record.recordRef,
+              chainHash: record.chainHash,
+              amountCents: qa.amountCents,
+            },
+          });
+          await this.entry(
+            tx,
+            payment.id,
+            `funding:${payment.id}`,
+            'funded',
+            payment.amountCents,
+            payment.paymentIntentId,
+          );
+          await this.entry(
+            tx,
+            payment.id,
+            `reserve:${allocation.id}`,
+            'reserved',
+            allocation.amountCents,
+            allocation.id,
+          );
+          return { id: allocation.id };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      )
+      .catch((error: unknown) => {
         if (
-          !qa ||
-          qa.status !== 'passed' ||
-          !qa.packagedRecordRef ||
-          !qa.amountCents ||
-          qa.amountCents < 1
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          ['P2002', 'P2034'].includes(error.code)
         )
           throw new ConflictException(
-            'A current QA pass with a positive valuation is required.',
+            'Another acceptance changed this contribution or its funding. Refresh Submissions and check Funds before retrying.',
           );
-        const source = await tx.briefPayment.findUnique({
-          where: { briefId: qa.briefId },
-        });
-        if (!source)
-          throw new ConflictException(
-            'No Stripe funding exists for this brief.',
-          );
-        const payment = await this.lock(tx, source.id);
-        if (
-          payment.status !== 'paid' ||
-          !payment.paymentIntentId ||
-          !payment.brief.escrowCommitted ||
-          payment.brief.status !== 'live' ||
-          payment.brief.expiresAt <= new Date()
-        )
-          throw new ConflictException(
-            'Brief must be live, funded and unexpired.',
-          );
-        const existing = await tx.fundAllocation.findUnique({
-          where: { qaId },
-        });
-        if (existing) return { id: existing.id };
-        const record = await tx.packagedRecord.findUnique({
-          where: { recordRef: qa.packagedRecordRef },
-        });
-        const receipt =
-          record &&
-          (await tx.consentReceipt.findUnique({
-            where: { receiptRef: record.consentReceiptRef },
-          }));
-        if (
-          !record ||
-          record.userId !== qa.userId ||
-          record.status !== 'available' ||
-          qa.packagedChainHash !== record.chainHash ||
-          !receipt ||
-          receipt.revokedAt
-        )
-          throw new ConflictException(
-            'Contribution is unavailable or consent has been withdrawn.',
-          );
-        const volume = payment.brief.volume as {
-          targetConversations: number;
-          maxPerContributor?: number | null;
-        };
-        const count = await tx.fundAllocation.count({
-          where: {
-            paymentId: payment.id,
-            status: { notIn: ['cancelled', 'reversed'] },
-          },
-        });
-        const ownCount = await tx.fundAllocation.count({
-          where: {
-            paymentId: payment.id,
-            userId: qa.userId,
-            status: { notIn: ['cancelled', 'reversed'] },
-          },
-        });
-        if (
-          count >= volume.targetConversations ||
-          (volume.maxPerContributor && ownCount >= volume.maxPerContributor)
-        )
-          throw new ConflictException('Brief collection limit reached.');
-        const balances = await this.balances(
-          tx,
-          payment.id,
-          payment.amountCents,
-        );
-        if (balances.availableCents < qa.amountCents)
-          throw new ConflictException('Insufficient unallocated funding.');
-        const allocation = await tx.fundAllocation.create({
-          data: {
-            paymentId: payment.id,
-            qaId: qa.id,
-            userId: qa.userId,
-            recordRef: record.recordRef,
-            activeRecordRef: record.recordRef,
-            chainHash: record.chainHash,
-            amountCents: qa.amountCents,
-          },
-        });
-        await this.entry(
-          tx,
-          payment.id,
-          `funding:${payment.id}`,
-          'funded',
-          payment.amountCents,
-          payment.paymentIntentId,
-        );
-        await this.entry(
-          tx,
-          payment.id,
-          `reserve:${allocation.id}`,
-          'reserved',
-          allocation.amountCents,
-          allocation.id,
-        );
-        return { id: allocation.id };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    );
+        throw error;
+      });
   }
   async cancel(userId: string, id: string): Promise<{ cancelled: boolean }> {
     await this.role(userId, 'admin');

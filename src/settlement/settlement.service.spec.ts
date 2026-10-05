@@ -37,6 +37,7 @@ function setup() {
   const db = {
     user: { findUnique: jest.fn().mockResolvedValue({ role: 'admin' }) },
     qaResult: {
+      findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn().mockResolvedValue(qa),
       findUniqueOrThrow: jest.fn().mockResolvedValue(qa),
     },
@@ -60,6 +61,7 @@ function setup() {
       update: jest.fn(),
     },
     packagedRecord: {
+      findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn().mockResolvedValue(record),
       findUniqueOrThrow: jest.fn().mockResolvedValue(record),
       update: jest.fn(),
@@ -349,5 +351,157 @@ describe('Accounts v2 onboarding', () => {
       'not been enabled',
     );
     expect(stripe.v2.core.accounts.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('contributor submission history', () => {
+  it('rejects non-contributor access', async () => {
+    const { service, db } = setup();
+    await expect(service.submissions('admin', 1)).rejects.toThrow();
+    expect(db.packagedRecord.findMany).not.toHaveBeenCalled();
+  });
+  it('scopes every history query to the authenticated owner and excludes content', async () => {
+    const { service, db } = setup();
+    db.user.findUnique.mockResolvedValue({ role: 'user' });
+    db.packagedRecord.findMany.mockResolvedValue([
+      {
+        recordRef: 'r',
+        status: 'available',
+        chainHash: 'h',
+        createdAt: new Date(0),
+      },
+    ]);
+    db.qaResult.findMany.mockResolvedValue([
+      {
+        packagedRecordRef: 'r',
+        packagedChainHash: 'h',
+        status: 'passed',
+        amountCents: 100,
+        allocation: null,
+        briefMatch: {
+          brief: {
+            status: 'live',
+            expiresAt: new Date(Date.now() + 86400000),
+            escrowCommitted: true,
+            payment: { status: 'paid', paymentIntentId: 'pi' },
+          },
+        },
+      },
+    ]);
+    const result = await service.submissions('u', 1);
+    expect(result.submissions[0]).toEqual({
+      reference: 'r',
+      submittedAt: new Date(0),
+      status: 'awaiting_acceptance',
+      amountCents: null,
+    });
+    for (const mock of [
+      db.packagedRecord.findMany,
+      db.qaResult.findMany,
+      db.fundAllocation.findMany,
+    ]) {
+      expect(mock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ userId: 'u' }) as unknown,
+        }),
+      );
+    }
+  });
+  it('does not reuse quality results for an older version of a conversation', async () => {
+    const { service, db } = setup();
+    db.user.findUnique.mockResolvedValue({ role: 'user' });
+    db.packagedRecord.findMany.mockResolvedValue([
+      {
+        recordRef: 'r',
+        status: 'available',
+        chainHash: 'new',
+        createdAt: new Date(),
+      },
+    ]);
+    db.qaResult.findMany.mockResolvedValue([
+      { packagedRecordRef: 'r', packagedChainHash: 'old', status: 'passed' },
+    ]);
+    expect((await service.submissions('u', 1)).submissions[0].status).toBe(
+      'awaiting_matching',
+    );
+  });
+});
+
+describe('submission and admin acceptance synchronization', () => {
+  it('tracks the same saved record from pending acceptance through reservation and payment', async () => {
+    const { service, db } = setup();
+    db.packagedRecord.findMany.mockResolvedValue([
+      {
+        recordRef: 'r',
+        status: 'available',
+        chainHash: 'hash',
+        createdAt: new Date(0),
+      },
+    ]);
+    db.qaResult.findMany.mockResolvedValue([
+      {
+        packagedRecordRef: 'r',
+        packagedChainHash: 'hash',
+        status: 'passed',
+        amountCents: 100,
+        allocation: null,
+        briefMatch: {
+          brief: {
+            status: 'live',
+            expiresAt: new Date(Date.now() + 86400000),
+            escrowCommitted: true,
+            payment: { status: 'paid', paymentIntentId: 'pi' },
+          },
+        },
+      },
+    ]);
+    db.user.findUnique.mockResolvedValue({ role: 'user' });
+    expect((await service.submissions('u', 1)).submissions[0].status).toBe(
+      'awaiting_acceptance',
+    );
+
+    db.user.findUnique.mockResolvedValue({ role: 'admin' });
+    db.fundAllocation.create.mockImplementation(
+      (args: { data: { recordRef: string; amountCents: number } }) => {
+        const allocation = { ...args.data, id: 'a', status: 'reserved' };
+        db.fundAllocation.findMany.mockResolvedValue([allocation]);
+        return Promise.resolve(allocation);
+      },
+    );
+    await service.reserve('admin', 'q');
+    db.user.findUnique.mockResolvedValue({ role: 'user' });
+    expect((await service.submissions('u', 1)).submissions[0]).toMatchObject({
+      reference: 'r',
+      status: 'reserved',
+      amountCents: 100,
+    });
+    // Provider settlement persists these states on the same allocation.
+    for (const status of [
+      'transferring',
+      'transferred',
+      'reversing',
+      'reversed',
+      'cancelled',
+    ]) {
+      db.fundAllocation.findMany.mockResolvedValue([
+        { recordRef: 'r', amountCents: 100, status },
+      ]);
+      expect((await service.submissions('u', 1)).submissions[0].status).toBe(
+        status,
+      );
+    }
+  });
+});
+
+describe('cross-brief duplicate acceptance', () => {
+  it('blocks a conversation already allocated to another brief', async () => {
+    const { service, db } = setup();
+    db.fundAllocation.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'existing-other-brief' });
+    await expect(service.reserve('admin', 'q')).rejects.toThrow(
+      'another brief',
+    );
+    expect(db.fundAllocation.create).not.toHaveBeenCalled();
   });
 });

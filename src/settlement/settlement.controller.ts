@@ -1,5 +1,8 @@
 import {
   Body,
+  Query,
+  DefaultValuePipe,
+  ParseIntPipe,
   Controller,
   Get,
   HttpCode,
@@ -39,6 +42,21 @@ export class SettlementController {
   })
   dashboard(@Req() req: AuthenticatedRequest) {
     return this.settlement.dashboard(req.user.sub);
+  }
+  @Get('submissions')
+  @Roles('user')
+  @ApiOperation({
+    summary: 'Contributor-owned submission history and settlement status',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Paginated metadata only; no chat content or buyer details',
+  })
+  submissions(
+    @Req() req: AuthenticatedRequest,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+  ) {
+    return this.settlement.submissions(req.user.sub, page);
   }
   @Post('connect')
   @Roles('user')

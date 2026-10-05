@@ -14,6 +14,9 @@ export class PrismaService
   constructor(configService: ConfigService) {
     const url = new URL(configService.getOrThrow<string>('DATABASE_URL'));
     super({
+      // Remote multi-query operations can exceed Prisma's five-second default.
+      // Bound the wait without automatically retrying payment side effects.
+      transactionOptions: { maxWait: 10000, timeout: 30000 },
       adapter: new PrismaPg(buildPoolConfig(configService), {
         schema: url.searchParams.get('schema') ?? 'public',
       }),
